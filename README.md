@@ -1,6 +1,6 @@
 # MPC Dev Environment
 
-> A complete local development environment for the Multi-Platform Controller (MPC)
+A complete local development environment for the Multi-Platform Controller (MPC)
 
 ## Overview
 
