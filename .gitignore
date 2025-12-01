@@ -16,6 +16,9 @@
 *.test
 api.test
 
+# Compiled binaries (too large for GitHub)
+bin/
+
 # GoLand Plugin
 goland-plugin/build/
 goland-plugin/.gradle/
