@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>com.meyrevived.mpc-dev-env</id>
+    <name>MPC Dev Environment</name>
+    <vendor url="https://github.com/meyrevived">meyrevived</vendor>
+
+    <description><![CDATA[
+    Development environment manager for the Konflux Multi-Platform Controller (MPC).
+
+    Features:
+    - Automated cluster setup and management
+    - Hot reload for code changes
+    - Multi-repository change detection
+    - Secure credential management
+    - AI-powered code assistance with Claude
+    - Real-time activity monitoring
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window -->
+        <toolWindow id="MPC Dev Environment"
+                    factoryClass="com.redhat.mpcdev.ui.MPCToolWindowFactory"
+                    icon="/icons/mpc_icon.svg"
+                    anchor="right"/>
+
+        <!-- Application Service -->
+        <applicationService serviceImplementation="com.redhat.mpcdev.services.BackendClient"/>
+
+        <!-- Notification Group -->
+        <notificationGroup id="MPC Dev Environment" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <!-- Main Menu Actions -->
+        <group id="MPCDevEnv.MainMenu" text="MPC Dev Environment" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+
+            <action id="MPCDevEnv.Rebuild"
+                    class="com.redhat.mpcdev.actions.RebuildAction"
+                    text="Rebuild MPC"
+                    description="Rebuild and redeploy Multi-Platform Controller">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift M"/>
+            </action>
+        </group>
+    </actions>
+</idea-plugin>

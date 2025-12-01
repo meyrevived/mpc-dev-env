@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    build.appstudio.redhat.com/multi-platform-config: hosts
+  name: host-config
+  namespace: multi-platform-controller
+data:
+  local-platforms: "\
+    linux/x86_64,\
+    local,\
+    localhost,\
+    "
+  dynamic-platforms: "\
+    linux/arm64,\
+    linux/amd64,\
+    linux-mlarge/arm64,\
+    linux-mlarge/amd64\
+    "
+  instance-tag: "mpc-dev-env"
+
+  # ARM64 - Basic (m6g.large)
+  dynamic.linux-arm64.type: "aws"
+  dynamic.linux-arm64.region: "us-east-1"
+  dynamic.linux-arm64.ami: "ami-03d8261904652a19c"
+  dynamic.linux-arm64.instance-type: "m6g.large"
+  dynamic.linux-arm64.instance-tag: "dev-arm64"
+  dynamic.linux-arm64.key-name: "mpc-dev-key"
+  dynamic.linux-arm64.aws-secret: "aws-account"
+  dynamic.linux-arm64.ssh-secret: "aws-ssh-key"
+  dynamic.linux-arm64.security-group-id: "sg-default"
+  dynamic.linux-arm64.max-instances: "10"
+  dynamic.linux-arm64.subnet-id: "subnet-default"
+  dynamic.linux-arm64.allocation-timeout: "600"
+
+  # ARM64 - Medium (m6g.large)
+  dynamic.linux-mlarge-arm64.type: "aws"
+  dynamic.linux-mlarge-arm64.region: "us-east-1"
+  dynamic.linux-mlarge-arm64.ami: "ami-03d8261904652a19c"
+  dynamic.linux-mlarge-arm64.instance-type: "m6g.large"
+  dynamic.linux-mlarge-arm64.instance-tag: "dev-arm64-mlarge"
+  dynamic.linux-mlarge-arm64.key-name: "mpc-dev-key"
+  dynamic.linux-mlarge-arm64.aws-secret: "aws-account"
+  dynamic.linux-mlarge-arm64.ssh-secret: "aws-ssh-key"
+  dynamic.linux-mlarge-arm64.security-group-id: "sg-default"
+  dynamic.linux-mlarge-arm64.max-instances: "10"
+  dynamic.linux-mlarge-arm64.subnet-id: "subnet-default"
+  dynamic.linux-mlarge-arm64.allocation-timeout: "600"
+
+  # AMD64 - Basic (m6a.large)
+  dynamic.linux-amd64.type: "aws"
+  dynamic.linux-amd64.region: "us-east-1"
+  dynamic.linux-amd64.ami: "ami-0c02fb55b1a47c3c8"
+  dynamic.linux-amd64.instance-type: "m6a.large"
+  dynamic.linux-amd64.instance-tag: "dev-amd64"
+  dynamic.linux-amd64.key-name: "mpc-dev-key"
+  dynamic.linux-amd64.aws-secret: "aws-account"
+  dynamic.linux-amd64.ssh-secret: "aws-ssh-key"
+  dynamic.linux-amd64.security-group-id: "sg-default"
+  dynamic.linux-amd64.max-instances: "10"
+  dynamic.linux-amd64.subnet-id: "subnet-default"
+  dynamic.linux-amd64.allocation-timeout: "600"
+
+  # AMD64 - Medium (m6a.large)
+  dynamic.linux-mlarge-amd64.type: "aws"
+  dynamic.linux-mlarge-amd64.region: "us-east-1"
+  dynamic.linux-mlarge-amd64.ami: "ami-0c02fb55b1a47c3c8"
+  dynamic.linux-mlarge-amd64.instance-type: "m6a.large"
+  dynamic.linux-mlarge-amd64.instance-tag: "dev-amd64-mlarge"
+  dynamic.linux-mlarge-amd64.key-name: "mpc-dev-key"
+  dynamic.linux-mlarge-amd64.aws-secret: "aws-account"
+  dynamic.linux-mlarge-amd64.ssh-secret: "aws-ssh-key"
+  dynamic.linux-mlarge-amd64.security-group-id: "sg-default"
+  dynamic.linux-mlarge-amd64.max-instances: "10"
+  dynamic.linux-mlarge-amd64.subnet-id: "subnet-default"
+  dynamic.linux-mlarge-amd64.allocation-timeout: "600"
+
+  # S390X - Static host for development
+  host.s390x-dev.address: "127.0.0.1"
+  host.s390x-dev.platform: "linux/s390x"
+  host.s390x-dev.user: "root"
+  host.s390x-dev.secret: "ibm-s390x-ssh-key"
+  host.s390x-dev.concurrency: "4"
+
+  # PPC64LE - Static host for development
+  host.ppc64le-dev.address: "127.0.0.1"
+  host.ppc64le-dev.platform: "linux/ppc64le"
+  host.ppc64le-dev.user: "root"
+  host.ppc64le-dev.secret: "ibm-ppc64le-ssh-key"
+  host.ppc64le-dev.concurrency: "4"

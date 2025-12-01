@@ -1,0 +1,29 @@
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# MPC Dev Studio
+.mpc-devenv/
+*.log
+
+# Daemon process files
+*.pid
+
+# Test binaries
+*.test
+api.test
+
+# GoLand Plugin
+goland-plugin/build/
+goland-plugin/.gradle/
+
+# gemini ignore stuff
+.geminiignore
+
+# claude stuff
+.claude
+sst
+gemini

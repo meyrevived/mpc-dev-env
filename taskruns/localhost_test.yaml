@@ -1,0 +1,41 @@
+apiVersion: tekton.dev/v1
+kind: TaskRun
+metadata:
+  name: local-task
+  labels:
+    test-task-type: local-task
+spec:
+  taskSpec:
+    steps:
+    - name: test-execution
+      image: registry.access.redhat.com/ubi9/ubi:9.4-1214
+      script: |-
+        #!/bin/bash
+        set -e
+
+        # Create a test file with a lorem ipsum
+        echo "MPC Dev Environment E2E Test - TaskRun Execution Verification"
+        echo "=============================================================="
+        echo ""
+        echo "This TaskRun successfully executed on platform: $(params.PLATFORM)"
+        echo ""
+        echo "I have a friend, he fried his brain backpacking through India *"
+        echo "Thinks he's a hedgehog"
+        echo "Moshe - you are not a hedgehog"
+        echo "Moshe - you are not a hedgehog"
+        echo "Not a hedgehog, not a hedgehog, not a hedgehog"
+        echo ""
+        echo "* Manish, I hope you don't find this offensive. Remember, I'm an Israeli. I'm sure you know what"
+        echo "people from my country are known for doing in your country."
+        echo ""
+        echo "Test completed at: $(date)"
+        echo "Pod name: $(uname -n)"
+        echo ""
+        echo "✓ TaskRun execution verified"
+    params:
+    - description: The platform to build on
+      name: PLATFORM
+      type: string
+  params:
+  - name: PLATFORM
+    value: localhost
