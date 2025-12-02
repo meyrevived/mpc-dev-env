@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/meyrevived/mpc-dev-env/internal/config"
@@ -68,11 +69,11 @@ func (b *Builder) build(ctx context.Context) error {
 	log.Println("Starting MPC image build...")
 
 	// Step 1: Determine container runtime (docker or podman)
-	runtime, err := b.detectContainerRuntime()
+	containerRuntime, err := b.detectContainerRuntime()
 	if err != nil {
 		return fmt.Errorf("failed to detect container runtime: %w", err)
 	}
-	log.Printf("Using container runtime: %s", runtime)
+	log.Printf("Using container runtime: %s", containerRuntime)
 
 	// Step 2: Set up build parameters
 	buildContext := b.config.GetMpcRepoPath()
@@ -91,15 +92,22 @@ func (b *Builder) build(ctx context.Context) error {
 	log.Printf("Dockerfile: %s", dockerfile)
 
 	// Step 4: Construct build command
-	// Format: <runtime> build -t <tag> -f <dockerfile> <context>
+	// Format: <runtime> build --platform <platform> -t <tag> -f <dockerfile> <context>
+	// The --platform flag ensures we build for the host's native architecture.
+	// This prevents cross-compilation issues (e.g., ARM64 Mac trying to build amd64)
+	// which can cause OOM kills during Go compilation.
+	platform := "linux/" + runtime.GOARCH
+	log.Printf("Building for platform: %s", platform)
+
 	buildArgs := []string{
 		"build",
+		"--platform", platform,
 		"-t", imageTag,
 		"-f", dockerfile,
 		buildContext,
 	}
 
-	cmd := exec.CommandContext(ctx, runtime, buildArgs...)
+	cmd := exec.CommandContext(ctx, containerRuntime, buildArgs...)
 	cmd.Dir = buildContext
 
 	// Step 5: Set up streaming output
@@ -234,18 +242,18 @@ func (b *Builder) loadImageIntoKind(ctx context.Context, imageTag string) error 
 	log.Println("Loading image into Kind cluster...")
 
 	// Determine container runtime
-	runtime, err := b.detectContainerRuntime()
+	containerRuntime, err := b.detectContainerRuntime()
 	if err != nil {
 		return fmt.Errorf("failed to detect container runtime: %w", err)
 	}
 
 	// Use podman save to export image and pipe to kind load
 	// Format: podman save <image> | KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /dev/stdin --name konflux
-	saveCmd := exec.CommandContext(ctx, runtime, "save", imageTag)
+	saveCmd := exec.CommandContext(ctx, containerRuntime, "save", imageTag)
 	loadCmd := exec.CommandContext(ctx, "kind", "load", "image-archive", "/dev/stdin", "--name", "konflux")
 
 	// Set environment for kind if using podman
-	if runtime == "podman" {
+	if containerRuntime == "podman" {
 		loadCmd.Env = append(os.Environ(), "KIND_EXPERIMENTAL_PROVIDER=podman")
 	}
 

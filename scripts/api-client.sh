@@ -41,13 +41,13 @@ daemon_get_status() {
 # daemon_wait_ready - Poll daemon until it becomes ready or timeout
 #
 # Arguments:
-#   $1 - Timeout in seconds (default: 30)
+#   $1 - Timeout in seconds (default: 120)
 #
 # Returns:
 #   0 if daemon becomes ready within timeout
 #   1 if timeout expires
 daemon_wait_ready() {
-    local timeout_seconds="${1:-30}"
+    local timeout_seconds="${1:-120}"
     local elapsed=0
 
     log_info "Waiting for daemon to be ready..."

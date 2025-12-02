@@ -72,16 +72,17 @@ build:
 
 # Run the daemon (auto-detects paths if not set)
 run: build
-	@# Auto-detect paths if not set
-	@if [ -z "$$MPC_DEV_ENV_PATH" ]; then \
+	@# Source saved config if it exists, then auto-detect remaining paths
+	@if [ -f "$(PWD)/.env.local" ]; then \
+		. $(PWD)/.env.local; \
+	fi; \
+	if [ -z "$$MPC_DEV_ENV_PATH" ]; then \
 		export MPC_DEV_ENV_PATH="$(PWD)"; \
-		echo "Auto-detected MPC_DEV_ENV_PATH: $$MPC_DEV_ENV_PATH"; \
 	fi; \
 	if [ -z "$$MPC_REPO_PATH" ]; then \
 		PARENT_DIR="$$(dirname $(PWD))"; \
 		if [ -d "$$PARENT_DIR/multi-platform-controller" ]; then \
 			export MPC_REPO_PATH="$$PARENT_DIR/multi-platform-controller"; \
-			echo "Auto-detected MPC_REPO_PATH: $$MPC_REPO_PATH"; \
 		else \
 			echo "Error: Cannot auto-detect MPC_REPO_PATH. multi-platform-controller not found as sibling directory."; \
 			echo "Please set manually: export MPC_REPO_PATH=/path/to/multi-platform-controller"; \
@@ -111,20 +112,17 @@ test-api:
 # Run end-to-end test (fully interactive)
 test-e2e:
 	@echo "Running end-to-end test..."
-	@# Auto-detect paths if not set
-	@if [ -z "$$MPC_DEV_ENV_PATH" ]; then \
+	@# Source saved config if it exists, then auto-detect remaining paths
+	@if [ -f "$(PWD)/.env.local" ]; then \
+		. $(PWD)/.env.local; \
+	fi; \
+	if [ -z "$$MPC_DEV_ENV_PATH" ]; then \
 		export MPC_DEV_ENV_PATH="$(PWD)"; \
-		echo "Auto-detected MPC_DEV_ENV_PATH: $$MPC_DEV_ENV_PATH"; \
 	fi; \
 	if [ -z "$$MPC_REPO_PATH" ]; then \
 		PARENT_DIR="$$(dirname $(PWD))"; \
 		if [ -d "$$PARENT_DIR/multi-platform-controller" ]; then \
 			export MPC_REPO_PATH="$$PARENT_DIR/multi-platform-controller"; \
-			echo "Auto-detected MPC_REPO_PATH: $$MPC_REPO_PATH"; \
-		else \
-			echo "Error: Cannot auto-detect MPC_REPO_PATH. multi-platform-controller not found as sibling directory."; \
-			echo "Please set manually: export MPC_REPO_PATH=/path/to/multi-platform-controller"; \
-			exit 1; \
 		fi; \
 	fi; \
 	MPC_DEV_ENV_PATH="$$MPC_DEV_ENV_PATH" MPC_REPO_PATH="$$MPC_REPO_PATH" bash scripts/test-e2e.sh
@@ -275,20 +273,17 @@ env:
 # Development environment management
 dev-env:
 	@echo "Starting MPC development environment setup..."
-	@# Auto-detect paths if not set
-	@if [ -z "$$MPC_DEV_ENV_PATH" ]; then \
+	@# Source saved config if it exists, then auto-detect remaining paths
+	@if [ -f "$(PWD)/.env.local" ]; then \
+		. $(PWD)/.env.local; \
+	fi; \
+	if [ -z "$$MPC_DEV_ENV_PATH" ]; then \
 		export MPC_DEV_ENV_PATH="$(PWD)"; \
-		echo "Auto-detected MPC_DEV_ENV_PATH: $$MPC_DEV_ENV_PATH"; \
 	fi; \
 	if [ -z "$$MPC_REPO_PATH" ]; then \
 		PARENT_DIR="$$(dirname $(PWD))"; \
 		if [ -d "$$PARENT_DIR/multi-platform-controller" ]; then \
 			export MPC_REPO_PATH="$$PARENT_DIR/multi-platform-controller"; \
-			echo "Auto-detected MPC_REPO_PATH: $$MPC_REPO_PATH"; \
-		else \
-			echo "Error: Cannot auto-detect MPC_REPO_PATH. multi-platform-controller not found as sibling directory."; \
-			echo "Please set manually: export MPC_REPO_PATH=/path/to/multi-platform-controller"; \
-			exit 1; \
 		fi; \
 	fi; \
 	MPC_DEV_ENV_PATH="$$MPC_DEV_ENV_PATH" MPC_REPO_PATH="$$MPC_REPO_PATH" bash scripts/dev-env.sh

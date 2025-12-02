@@ -21,9 +21,6 @@ type Config struct {
 	// MpcDevEnvPath is the absolute path to the mpc_dev_env repository (this project)
 	MpcDevEnvPath string
 
-	// InfraDeploymentsPath is the absolute path to the infra-deployments repository
-	InfraDeploymentsPath string
-
 	// TempDir is the directory for temporary daemon operations (derived from MpcDevEnvPath)
 	TempDir string
 }
@@ -66,19 +63,14 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	// Derive infra-deployments path as sibling to mpc_dev_env
-	// Structure: ~/Work/mpc_dev_env and ~/Work/infra-deployments
-	infraDeploymentsPath := filepath.Join(filepath.Dir(mpcDevEnvPath), "infra-deployments")
-
 	// Construct derived paths
 	tempDir := filepath.Join(mpcDevEnvPath, "temp")
 
 	// Create the Config struct
 	cfg := &Config{
-		MpcRepoPath:          mpcRepoPath,
-		MpcDevEnvPath:        mpcDevEnvPath,
-		InfraDeploymentsPath: infraDeploymentsPath,
-		TempDir:              tempDir,
+		MpcRepoPath:   mpcRepoPath,
+		MpcDevEnvPath: mpcDevEnvPath,
+		TempDir:       tempDir,
 	}
 
 	// Validate the configuration
@@ -112,14 +104,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cannot access MPC_DEV_ENV_PATH: %w", err)
 	}
 
-	// Check that InfraDeploymentsPath exists
-	if _, err := os.Stat(c.InfraDeploymentsPath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("InfraDeploymentsPath does not exist: %s", c.InfraDeploymentsPath)
-		}
-		return fmt.Errorf("cannot access InfraDeploymentsPath: %w", err)
-	}
-
 	return nil
 }
 
@@ -136,9 +120,4 @@ func (c *Config) GetMpcRepoPath() string {
 // GetMpcDevEnvPath returns the path to the mpc_dev_env repository.
 func (c *Config) GetMpcDevEnvPath() string {
 	return c.MpcDevEnvPath
-}
-
-// GetInfraDeploymentsPath returns the path to the infra-deployments repository.
-func (c *Config) GetInfraDeploymentsPath() string {
-	return c.InfraDeploymentsPath
 }

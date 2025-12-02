@@ -12,6 +12,9 @@
 # Daemon process files
 *.pid
 
+# Local environment configuration (user-specific paths)
+.env.local
+
 # Test binaries
 *.test
 api.test

@@ -37,17 +37,15 @@ var _ = Describe("Config", func() {
 	})
 
 	Describe("LoadConfig", func() {
-		var mpcDevEnvPath, mpcRepoPath, infraDeploymentsPath string
+		var mpcDevEnvPath, mpcRepoPath string
 
 		BeforeEach(func() {
 			// Create a realistic directory structure
 			mpcDevEnvPath = filepath.Join(tempDir, "mpc_dev_env")
 			mpcRepoPath = filepath.Join(tempDir, "multi-platform-controller")
-			infraDeploymentsPath = filepath.Join(tempDir, "infra-deployments")
 
 			Expect(os.MkdirAll(mpcDevEnvPath, 0755)).To(Succeed())
 			Expect(os.MkdirAll(mpcRepoPath, 0755)).To(Succeed())
-			Expect(os.MkdirAll(infraDeploymentsPath, 0755)).To(Succeed())
 		})
 
 		Context("with environment variables set", func() {
@@ -61,7 +59,6 @@ var _ = Describe("Config", func() {
 
 				Expect(cfg.GetMpcDevEnvPath()).To(Equal(mpcDevEnvPath))
 				Expect(cfg.GetMpcRepoPath()).To(Equal(mpcRepoPath))
-				Expect(cfg.GetInfraDeploymentsPath()).To(Equal(infraDeploymentsPath))
 				Expect(cfg.GetTempDir()).To(Equal(filepath.Join(mpcDevEnvPath, "temp")))
 			})
 		})
@@ -77,7 +74,6 @@ var _ = Describe("Config", func() {
 
 				Expect(cfg.GetMpcDevEnvPath()).To(Equal(mpcDevEnvPath))
 				Expect(cfg.GetMpcRepoPath()).To(Equal(mpcRepoPath))
-				Expect(cfg.GetInfraDeploymentsPath()).To(Equal(infraDeploymentsPath))
 			})
 
 			It("should fail if multi-platform-controller sibling directory is not found", func() {
@@ -111,19 +107,16 @@ var _ = Describe("Config", func() {
 		BeforeEach(func() {
 			mpcDevEnvPath := filepath.Join(tempDir, "mpc_dev_env")
 			mpcRepoPath := filepath.Join(tempDir, "multi-platform-controller")
-			infraDeploymentsPath := filepath.Join(tempDir, "infra-deployments")
 
 			cfg = &Config{
-				MpcDevEnvPath:        mpcDevEnvPath,
-				MpcRepoPath:          mpcRepoPath,
-				InfraDeploymentsPath: infraDeploymentsPath,
+				MpcDevEnvPath: mpcDevEnvPath,
+				MpcRepoPath:   mpcRepoPath,
 			}
 		})
 
 		It("should return no error if all paths exist", func() {
 			Expect(os.MkdirAll(cfg.MpcDevEnvPath, 0755)).To(Succeed())
 			Expect(os.MkdirAll(cfg.MpcRepoPath, 0755)).To(Succeed())
-			Expect(os.MkdirAll(cfg.InfraDeploymentsPath, 0755)).To(Succeed())
 
 			err := cfg.Validate()
 			Expect(err).NotTo(HaveOccurred())
@@ -131,7 +124,6 @@ var _ = Describe("Config", func() {
 
 		It("should return an error if MpcRepoPath does not exist", func() {
 			Expect(os.MkdirAll(cfg.MpcDevEnvPath, 0755)).To(Succeed())
-			Expect(os.MkdirAll(cfg.InfraDeploymentsPath, 0755)).To(Succeed())
 
 			err := cfg.Validate()
 			Expect(err).To(HaveOccurred())
@@ -140,20 +132,10 @@ var _ = Describe("Config", func() {
 
 		It("should return an error if MpcDevEnvPath does not exist", func() {
 			Expect(os.MkdirAll(cfg.MpcRepoPath, 0755)).To(Succeed())
-			Expect(os.MkdirAll(cfg.InfraDeploymentsPath, 0755)).To(Succeed())
 
 			err := cfg.Validate()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MPC_DEV_ENV_PATH does not exist"))
-		})
-
-		It("should return an error if InfraDeploymentsPath does not exist", func() {
-			Expect(os.MkdirAll(cfg.MpcDevEnvPath, 0755)).To(Succeed())
-			Expect(os.MkdirAll(cfg.MpcRepoPath, 0755)).To(Succeed())
-
-			err := cfg.Validate()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("InfraDeploymentsPath does not exist"))
 		})
 	})
 })
