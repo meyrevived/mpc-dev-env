@@ -52,6 +52,13 @@ readonly SCRIPTS_DIR="${SCRIPT_DIR}"
 readonly TASKRUNS_DIR="${MPC_DEV_ENV_PATH}/taskruns"
 readonly LOGS_DIR="${MPC_DEV_ENV_PATH}/logs"
 
+# Set up session logging - capture all output to a timestamped log file
+# This helps with debugging issues on different machines
+mkdir -p "$LOGS_DIR"
+SESSION_LOG="${LOGS_DIR}/dev-env_$(date '+%Y%m%d_%H%M%S').log"
+exec > >(tee -a "$SESSION_LOG") 2>&1
+echo "Session log: $SESSION_LOG"
+
 # Additional color codes for dev-env specific logging (COLOR_RESET comes from utils.sh)
 readonly COLOR_SUCCESS='\033[0;32m'
 readonly COLOR_ERROR='\033[0;31m'
