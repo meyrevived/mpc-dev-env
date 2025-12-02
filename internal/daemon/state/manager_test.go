@@ -420,7 +420,6 @@ var _ = Describe("StateManager", func() {
 			config.RepoPaths = map[string]string{
 				"multi-platform-controller": "/home/user/mpc",
 				"konflux-ci":                "/home/user/konflux",
-				"infra-deployments":         "/home/user/infra",
 			}
 
 			checkCount := 0
@@ -432,8 +431,6 @@ var _ = Describe("StateManager", func() {
 					repoName = "multi-platform-controller"
 				case "/home/user/konflux":
 					repoName = "konflux-ci"
-				case "/home/user/infra":
-					repoName = "infra-deployments"
 				}
 
 				return &state.RepositoryState{
@@ -454,14 +451,13 @@ var _ = Describe("StateManager", func() {
 			err = manager.RefreshState()
 			Expect(err).ToNot(HaveOccurred())
 
-			// Should have called CheckRepoState for all 3 repositories
-			Expect(checkCount).To(Equal(3))
+			// Should have called CheckRepoState for all 2 repositories
+			Expect(checkCount).To(Equal(2))
 
 			updatedState := manager.GetState()
-			Expect(updatedState.Repositories).To(HaveLen(3))
+			Expect(updatedState.Repositories).To(HaveLen(2))
 			Expect(updatedState.Repositories).To(HaveKey("multi-platform-controller"))
 			Expect(updatedState.Repositories).To(HaveKey("konflux-ci"))
-			Expect(updatedState.Repositories).To(HaveKey("infra-deployments"))
 		})
 
 		It("should set cluster status to running when cluster manager returns running", func() {

@@ -31,12 +31,32 @@
 
 set -euo pipefail
 
-# Color codes for pretty output
+# Always determine script location first - this is reliable regardless of env vars
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source helper scripts from script's actual location (not from env var which may be stale)
+# shellcheck source=scripts/utils.sh
+source "${SCRIPT_DIR}/utils.sh"
+
+# shellcheck source=scripts/api-client.sh
+source "${SCRIPT_DIR}/api-client.sh"
+
+# shellcheck source=scripts/cleanup.sh
+source "${SCRIPT_DIR}/cleanup.sh"
+
+# Define base directory structure (set from script location if not already set)
+: "${MPC_DEV_ENV_PATH:=$(dirname "$SCRIPT_DIR")}"
+export MPC_DEV_ENV_PATH
+
+readonly SCRIPTS_DIR="${SCRIPT_DIR}"
+readonly TASKRUNS_DIR="${MPC_DEV_ENV_PATH}/taskruns"
+readonly LOGS_DIR="${MPC_DEV_ENV_PATH}/logs"
+
+# Additional color codes for dev-env specific logging (COLOR_RESET comes from utils.sh)
 readonly COLOR_SUCCESS='\033[0;32m'
 readonly COLOR_ERROR='\033[0;31m'
 readonly COLOR_WARNING='\033[0;33m'
 readonly COLOR_INFO='\033[0;34m'
-readonly COLOR_RESET='\033[0m'
 
 # Logging function with timestamps and colors
 log() {
@@ -63,24 +83,6 @@ log() {
             ;;
     esac
 }
-
-# Define base directory structure
-: "${MPC_DEV_ENV_PATH:=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-export MPC_DEV_ENV_PATH
-
-readonly SCRIPTS_DIR="${MPC_DEV_ENV_PATH}/scripts"
-readonly TASKRUNS_DIR="${MPC_DEV_ENV_PATH}/taskruns"
-readonly LOGS_DIR="${MPC_DEV_ENV_PATH}/logs"
-
-# Source helper scripts
-# shellcheck source=scripts/utils.sh
-source "${SCRIPTS_DIR}/utils.sh" 2>/dev/null || true
-
-# shellcheck source=scripts/api-client.sh
-source "${SCRIPTS_DIR}/api-client.sh" 2>/dev/null || true
-
-# shellcheck source=scripts/cleanup.sh
-source "${SCRIPTS_DIR}/cleanup.sh" 2>/dev/null || true
 
 # ============================================================================
 # Helper functions
@@ -122,42 +124,14 @@ check_taskrun_uses_local_platforms() {
 phase1_prerequisites() {
     log INFO "Phase 1: Checking prerequisites..."
 
-    # Check if MPC_DEV_ENV_PATH is set (should already be auto-detected at top of script)
-    if [ -z "${MPC_DEV_ENV_PATH:-}" ]; then
-        log ERROR "MPC_DEV_ENV_PATH environment variable is not set"
+    # Validate and set environment paths (prompts user if paths are invalid)
+    if ! validate_and_set_env_paths; then
+        log ERROR "Failed to validate environment paths"
         exit 1
     fi
 
-    # Auto-detect or validate MPC_REPO_PATH
-    if [ -z "${MPC_REPO_PATH:-}" ]; then
-        log INFO "MPC_REPO_PATH not set, attempting auto-detection..."
-        local parent_dir
-        parent_dir="$(dirname "$MPC_DEV_ENV_PATH")"
-        local candidate_path="${parent_dir}/multi-platform-controller"
-
-        if [ -d "$candidate_path" ]; then
-            export MPC_REPO_PATH="$candidate_path"
-            log SUCCESS "Auto-detected MPC_REPO_PATH: $MPC_REPO_PATH"
-        else
-            log ERROR "MPC_REPO_PATH not set and auto-detection failed"
-            log ERROR "Looked for multi-platform-controller at: $candidate_path"
-            log ERROR "Please set manually: export MPC_REPO_PATH=/path/to/multi-platform-controller"
-            exit 1
-        fi
-    fi
-
-    # Validate that directories exist
-    if ! dir_exists "$MPC_REPO_PATH"; then
-        log ERROR "MPC_REPO_PATH directory does not exist: $MPC_REPO_PATH"
-        exit 1
-    fi
-    log SUCCESS "MPC_REPO_PATH verified: $MPC_REPO_PATH"
-
-    if ! dir_exists "$MPC_DEV_ENV_PATH"; then
-        log ERROR "MPC_DEV_ENV_PATH directory does not exist: $MPC_DEV_ENV_PATH"
-        exit 1
-    fi
     log SUCCESS "MPC_DEV_ENV_PATH verified: $MPC_DEV_ENV_PATH"
+    log SUCCESS "MPC_REPO_PATH verified: $MPC_REPO_PATH"
 
     # Check if daemon binary exists, if not build it
     local daemon_binary="${MPC_DEV_ENV_PATH}/bin/mpc-daemon"
@@ -219,8 +193,8 @@ phase2_daemon_startup() {
     log INFO "Daemon logs: $daemon_log_file"
 
     # Wait for daemon to be ready
-    if ! daemon_wait_ready 30; then
-        log ERROR "Daemon failed to start within 30 seconds"
+    if ! daemon_wait_ready 120; then
+        log ERROR "Daemon failed to start within 120 seconds"
         log ERROR "Check daemon logs at: $daemon_log_file"
         exit 1
     fi

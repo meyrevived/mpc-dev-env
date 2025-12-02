@@ -1,8 +1,8 @@
 // Package git provides Git repository synchronization functionality.
 //
-// It handles keeping local repositories (multi-platform-controller and infra-deployments)
-// synchronized with their upstream sources. The package performs automatic fetching and
-// merging, with fallback to hard reset when local changes prevent fast-forward merges.
+// It handles keeping the local multi-platform-controller repository synchronized
+// with its upstream source. The package performs automatic fetching and merging,
+// with fallback to hard reset when local changes prevent fast-forward merges.
 //
 // This functionality replaces the Python-based UpstreamChangeDetector and provides
 // automatic repository updates without user intervention.
@@ -107,9 +107,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repoPath string) error {
 }
 
 // SyncAllRepos synchronizes all configured repositories.
-// This includes:
-//   - multi-platform-controller
-//   - infra-deployments
+// Currently, this only includes multi-platform-controller.
 //
 // Args:
 //
@@ -126,23 +124,22 @@ func (s *Syncer) SyncAllRepos(ctx context.Context) error {
 		path string
 	}{
 		{"multi-platform-controller", s.config.GetMpcRepoPath()},
-		{"infra-deployments", s.config.GetInfraDeploymentsPath()},
 	}
 
-	var errors []string
+	var syncErrors []string
 	for _, repo := range repos {
 		log.Printf("[Git Sync] Syncing repository: %s", repo.name)
 		if err := s.SyncRepo(ctx, repo.path); err != nil {
 			errMsg := fmt.Sprintf("%s: %v", repo.name, err)
-			errors = append(errors, errMsg)
+			syncErrors = append(syncErrors, errMsg)
 			log.Printf("[Git Sync] ERROR: Failed to sync %s: %v", repo.name, err)
 		} else {
 			log.Printf("[Git Sync] Successfully synced: %s", repo.name)
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to sync repositories: %s", strings.Join(errors, "; "))
+	if len(syncErrors) > 0 {
+		return fmt.Errorf("failed to sync repositories: %s", strings.Join(syncErrors, "; "))
 	}
 
 	log.Println("[Git Sync] All repositories synchronized successfully")

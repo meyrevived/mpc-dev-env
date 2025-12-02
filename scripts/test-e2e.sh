@@ -16,44 +16,31 @@
 
 set -euo pipefail
 
-# Auto-detect environment paths if not set
+# Always determine script location first - this is reliable regardless of env vars
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source shared utilities from script's actual location (not from env var which may be stale)
+# shellcheck source=scripts/utils.sh
+source "${SCRIPT_DIR}/utils.sh"
+
+# Set MPC_DEV_ENV_PATH based on script location if not already set
 if [ -z "${MPC_DEV_ENV_PATH:-}" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     export MPC_DEV_ENV_PATH="$(dirname "$SCRIPT_DIR")"
-    echo "Auto-detected MPC_DEV_ENV_PATH: $MPC_DEV_ENV_PATH"
 fi
 
-if [ -z "${MPC_REPO_PATH:-}" ]; then
-    parent_dir="$(dirname "$MPC_DEV_ENV_PATH")"
-    candidate_path="${parent_dir}/multi-platform-controller"
+# Color codes for output (used by local logging functions with different prefixes)
+readonly COLOR_SUCCESS_LOCAL='\033[0;32m'
+readonly COLOR_ERROR_LOCAL='\033[0;31m'
+readonly COLOR_INFO_LOCAL='\033[0;34m'
+readonly COLOR_RESET_LOCAL='\033[0m'
 
-    if [ -d "$candidate_path" ]; then
-        export MPC_REPO_PATH="$candidate_path"
-        echo "Auto-detected MPC_REPO_PATH: $MPC_REPO_PATH"
-    else
-        echo "Error: MPC_REPO_PATH not set and auto-detection failed"
-        echo "Looked for multi-platform-controller at: $candidate_path"
-        exit 1
-    fi
-fi
-
-# Color codes for output
-readonly COLOR_SUCCESS='\033[0;32m'
-readonly COLOR_ERROR='\033[0;31m'
-readonly COLOR_INFO='\033[0;34m'
-readonly COLOR_RESET='\033[0m'
-
-# Logging functions
-log_info() {
-    echo -e "${COLOR_INFO}[INFO]${COLOR_RESET} $*"
+# Local logging functions with [PASS]/[FAIL] prefixes for test output
+log_pass() {
+    echo -e "${COLOR_SUCCESS_LOCAL}[PASS]${COLOR_RESET_LOCAL} $*"
 }
 
-log_success() {
-    echo -e "${COLOR_SUCCESS}[PASS]${COLOR_RESET} $*"
-}
-
-log_error() {
-    echo -e "${COLOR_ERROR}[FAIL]${COLOR_RESET} $*"
+log_fail() {
+    echo -e "${COLOR_ERROR_LOCAL}[FAIL]${COLOR_RESET_LOCAL} $*"
 }
 
 # Main test function
@@ -63,18 +50,14 @@ main() {
     log_info "========================================="
     log_info ""
 
-    # Validate environment variables
+    # Validate environment paths (prompts user if paths are invalid)
     log_info "Validating environment variables..."
-    if [ -z "${MPC_REPO_PATH:-}" ]; then
-        log_error "MPC_REPO_PATH is not set"
-        exit 1
-    fi
-    if [ -z "${MPC_DEV_ENV_PATH:-}" ]; then
-        log_error "MPC_DEV_ENV_PATH is not set"
+    if ! validate_and_set_env_paths; then
+        log_fail "Failed to validate environment paths"
         exit 1
     fi
 
-    log_success "Environment variables validated"
+    log_pass "Environment variables validated"
     log_info "  MPC_DEV_ENV_PATH: $MPC_DEV_ENV_PATH"
     log_info "  MPC_REPO_PATH: $MPC_REPO_PATH"
     log_info ""
