@@ -465,16 +465,28 @@ phase5_mpc_deployment() {
                 break 2  # Break out of both loops
             fi
 
-            # Check if deployment exists and is ready
+            # Check if BOTH deployments exist and are ready (MPC controller and OTP server)
+            local mpc_ready=false
+            local otp_ready=false
+
             if kubectl rollout status deployment/multi-platform-controller \
                 -n multi-platform-controller --timeout=10s >/dev/null 2>&1; then
+                mpc_ready=true
+            fi
+
+            if kubectl rollout status deployment/multi-platform-otp-server \
+                -n multi-platform-controller --timeout=10s >/dev/null 2>&1; then
+                otp_ready=true
+            fi
+
+            if [ "$mpc_ready" = true ] && [ "$otp_ready" = true ]; then
                 deployment_ready=true
                 break
             fi
 
             # Only log every 30 seconds
             if [ $((elapsed % 30)) -eq 0 ]; then
-                log INFO "Still waiting for MPC deployment... ($elapsed/$max_wait seconds)"
+                log INFO "Still waiting for deployments... (MPC: $mpc_ready, OTP: $otp_ready) ($elapsed/$max_wait seconds)"
             fi
             sleep $check_interval
             elapsed=$((elapsed + check_interval))
@@ -486,15 +498,21 @@ phase5_mpc_deployment() {
             continue
         fi
 
-        # Verify deployment exists
-        log INFO "Verifying MPC deployment..."
+        # Verify both deployments exist
+        log INFO "Verifying MPC and OTP deployments..."
         if ! kubectl get deployment multi-platform-controller -n multi-platform-controller >/dev/null 2>&1; then
             cleanup_level_4 "MPC deployment not found in cluster"
             retry=$?
             continue
         fi
 
-        log SUCCESS "MPC deployed successfully"
+        if ! kubectl get deployment multi-platform-otp-server -n multi-platform-controller >/dev/null 2>&1; then
+            cleanup_level_4 "OTP server deployment not found in cluster"
+            retry=$?
+            continue
+        fi
+
+        log SUCCESS "MPC and OTP server deployed successfully"
     done
 
     # Prompt to continue to TaskRun

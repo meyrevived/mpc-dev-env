@@ -29,7 +29,7 @@ const (
 	// MPC deployment constants derived from the bash script
 	mpcNamespace        = "multi-platform-controller"
 	mpcDeploymentName   = "multi-platform-controller"
-	otpDeploymentName   = "otp-server"
+	otpDeploymentName   = "multi-platform-otp-server"
 	hostConfigName      = "host-config"
 	deployTimeout       = 10 * time.Minute
 	deploymentWaitRetry = 60 // 2 minutes with 2 second intervals
@@ -92,23 +92,27 @@ func (m *Manager) Deploy(ctx context.Context) error {
 		return fmt.Errorf("MPC deployment not ready: %w", err)
 	}
 
-	// Step 3: Wait for OTP deployment (optional, don't fail if not found)
-	_ = m.waitForOTPDeployment(ctx)
+	// Step 4: Wait for OTP deployment to be ready
+	if err := m.waitForOTPDeployment(ctx); err != nil {
+		return fmt.Errorf("OTP deployment not ready: %w", err)
+	}
 
-	// Step 4: Patch MPC deployment with custom images
+	// Step 5: Patch MPC deployment with custom images
 	if err := m.patchMPCDeployment(ctx); err != nil {
 		return fmt.Errorf("failed to patch MPC deployment: %w", err)
 	}
 
-	// Step 5: Patch OTP deployment if it exists (optional)
-	_ = m.patchOTPDeployment(ctx)
+	// Step 6: Patch OTP deployment with custom images
+	if err := m.patchOTPDeployment(ctx); err != nil {
+		return fmt.Errorf("failed to patch OTP deployment: %w", err)
+	}
 
-	// Step 6: Restart deployments to apply changes
+	// Step 7: Restart deployments to apply changes
 	if err := m.restartDeployments(ctx); err != nil {
 		return fmt.Errorf("failed to restart deployments: %w", err)
 	}
 
-	// Step 7: Verify deployment images
+	// Step 8: Verify deployment images
 	if err := m.verifyDeploymentImages(ctx); err != nil {
 		return fmt.Errorf("image verification failed: %w", err)
 	}
@@ -314,22 +318,24 @@ func (m *Manager) waitForMPCDeployment(ctx context.Context) error {
 	}
 }
 
-// waitForOTPDeployment waits for the OTP deployment (optional)
+// waitForOTPDeployment waits for the OTP deployment to be created.
+//
+// The OTP server is a required component for MPC to function properly.
+// It provides one-time passwords for secure access to build hosts.
 func (m *Manager) waitForOTPDeployment(ctx context.Context) error {
-	log.Println("Checking for OTP server deployment...")
+	log.Println("Waiting for OTP server deployment...")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	timeout := time.After(1 * time.Minute)
+	timeout := time.After(2 * time.Minute)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timeout:
-			log.Println("WARNING: OTP server deployment not found (this is optional)")
-			return nil
+			return errors.New("timeout waiting for OTP server deployment")
 		case <-ticker.C:
 			cmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", otpDeploymentName,
 				"-n", mpcNamespace)
@@ -381,33 +387,20 @@ func (m *Manager) patchMPCDeployment(ctx context.Context) error {
 	return nil
 }
 
-// patchOTPDeployment patches the OTP server deployment to use custom images
+// patchOTPDeployment patches the OTP server deployment to use custom images.
+//
+// This patches the OTP deployment to use the locally built image with imagePullPolicy: Never
+// so Kubernetes uses the image that was loaded into the Kind cluster.
 func (m *Manager) patchOTPDeployment(ctx context.Context) error {
 	log.Println("Patching OTP server deployment...")
 
-	// Check if deployment exists
-	checkCmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", otpDeploymentName,
-		"-n", mpcNamespace)
-	if err := checkCmd.Run(); err != nil {
-		log.Println("OTP server deployment not found, skipping patch")
-		return nil
-	}
-
-	// Get the image tag from environment
-	imageTag := os.Getenv("MPC_IMAGE_TAG")
-	if imageTag == "" {
-		imageTag = fmt.Sprintf("debug-%d", time.Now().Unix())
-	}
-
-	imageRepo := os.Getenv("IMAGE_REPO")
-	if imageRepo == "" {
-		imageRepo = "localhost:5001"
-	}
-
-	otpImage := fmt.Sprintf("%s/multi-platform-otp:%s", imageRepo, imageTag)
+	// Use the locally built image that was loaded into Kind cluster
+	// The image is built as "multi-platform-otp:latest" and Podman tags it as "localhost/multi-platform-otp:latest"
+	otpImage := "localhost/multi-platform-otp:latest"
 	log.Printf("Patching OTP with image: %s", otpImage)
 
-	// Create JSON patch
+	// Create JSON patch to update image and imagePullPolicy
+	// Use "Never" to ensure Kubernetes uses the locally loaded image instead of trying to pull
 	patchJSON := fmt.Sprintf(`[
   {
     "op": "replace",
@@ -417,7 +410,7 @@ func (m *Manager) patchOTPDeployment(ctx context.Context) error {
   {
     "op": "replace",
     "path": "/spec/template/spec/containers/0/imagePullPolicy",
-    "value": "IfNotPresent"
+    "value": "Never"
   }
 ]`, otpImage)
 
@@ -430,15 +423,16 @@ func (m *Manager) patchOTPDeployment(ctx context.Context) error {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("WARNING: Failed to patch OTP deployment: %v", err)
-		return nil // Don't fail, OTP is optional
+		return fmt.Errorf("failed to patch OTP deployment: %w", err)
 	}
 
 	log.Println("OTP server deployment patched successfully")
 	return nil
 }
 
-// restartDeployments restarts the MPC deployments to apply changes
+// restartDeployments restarts the MPC and OTP deployments to apply changes.
+//
+// Both deployments are restarted and we wait for both to be ready before returning.
 func (m *Manager) restartDeployments(ctx context.Context) error {
 	log.Println("Restarting deployments to apply changes...")
 
@@ -455,22 +449,18 @@ func (m *Manager) restartDeployments(ctx context.Context) error {
 
 	log.Println("Controller deployment restarted")
 
-	// Restart OTP deployment if it exists
-	checkCmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", otpDeploymentName,
+	// Restart OTP deployment
+	otpRestartCmd := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
+		"deployment/"+otpDeploymentName,
 		"-n", mpcNamespace)
-	if err := checkCmd.Run(); err == nil {
-		otpRestartCmd := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
-			"deployment/"+otpDeploymentName,
-			"-n", mpcNamespace)
-		otpRestartCmd.Stdout = os.Stdout
-		otpRestartCmd.Stderr = os.Stderr
+	otpRestartCmd.Stdout = os.Stdout
+	otpRestartCmd.Stderr = os.Stderr
 
-		if err := otpRestartCmd.Run(); err != nil {
-			log.Printf("WARNING: Failed to restart OTP deployment: %v", err)
-		} else {
-			log.Println("OTP server deployment restarted")
-		}
+	if err := otpRestartCmd.Run(); err != nil {
+		return fmt.Errorf("failed to restart OTP deployment: %w", err)
 	}
+
+	log.Println("OTP server deployment restarted")
 
 	// Wait for controller to be ready
 	log.Println("Waiting for controller to be ready...")
@@ -483,6 +473,19 @@ func (m *Manager) restartDeployments(ctx context.Context) error {
 
 	if err := waitCmd.Run(); err != nil {
 		return fmt.Errorf("failed to wait for controller rollout: %w", err)
+	}
+
+	// Wait for OTP to be ready
+	log.Println("Waiting for OTP server to be ready...")
+	otpWaitCmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
+		"deployment/"+otpDeploymentName,
+		"-n", mpcNamespace,
+		"--timeout=5m")
+	otpWaitCmd.Stdout = os.Stdout
+	otpWaitCmd.Stderr = os.Stderr
+
+	if err := otpWaitCmd.Run(); err != nil {
+		return fmt.Errorf("failed to wait for OTP rollout: %w", err)
 	}
 
 	log.Println("Deployments restarted successfully")

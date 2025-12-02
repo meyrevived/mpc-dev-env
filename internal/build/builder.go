@@ -39,9 +39,13 @@ func NewBuilder(cfg *config.Config) *Builder {
 	}
 }
 
-// BuildMPCImage builds the multi-platform-controller container image
-// It automatically detects whether to use docker or podman, builds the image,
-// and streams build output to the daemon logs.
+// BuildMPCImage builds both the multi-platform-controller and multi-platform-otp
+// container images. It automatically detects whether to use docker or podman,
+// builds both images, and streams build output to the daemon logs.
+//
+// Both images are required for the MPC stack to function:
+//   - multi-platform-controller: The main controller that manages builds
+//   - multi-platform-otp: The OTP server for secure access to build hosts
 //
 // Args:
 //
@@ -53,20 +57,37 @@ func NewBuilder(cfg *config.Config) *Builder {
 //	error: An error if the build fails, nil otherwise
 func BuildMPCImage(ctx context.Context, cfg *config.Config) error {
 	builder := NewBuilder(cfg)
-	return builder.build(ctx)
+
+	// Build the main controller image
+	if err := builder.buildImage(ctx, "Dockerfile", "multi-platform-controller:latest"); err != nil {
+		return fmt.Errorf("failed to build controller image: %w", err)
+	}
+
+	// Build the OTP server image
+	if err := builder.buildImage(ctx, "Dockerfile.otp", "multi-platform-otp:latest"); err != nil {
+		return fmt.Errorf("failed to build OTP image: %w", err)
+	}
+
+	return nil
 }
 
-// build performs the actual build operation for the MPC container image.
+// buildImage performs the actual build operation for a container image.
 // It executes the following steps:
 //  1. Detects container runtime (Docker or Podman)
 //  2. Verifies Dockerfile exists in MPC repository
-//  3. Builds the image with tag "multi-platform-controller:latest"
+//  3. Builds the image with the specified tag
 //  4. Streams build output to daemon logs
 //  5. Loads the built image into the Kind cluster
 //
+// Args:
+//
+//	ctx: Context for cancellation and timeout
+//	dockerfileName: Name of the Dockerfile (e.g., "Dockerfile" or "Dockerfile.otp")
+//	imageTag: Tag for the built image (e.g., "multi-platform-controller:latest")
+//
 // The build runs in the MPC repository directory and respects context cancellation.
-func (b *Builder) build(ctx context.Context) error {
-	log.Println("Starting MPC image build...")
+func (b *Builder) buildImage(ctx context.Context, dockerfileName, imageTag string) error {
+	log.Printf("Starting image build: %s", imageTag)
 
 	// Step 1: Determine container runtime (docker or podman)
 	containerRuntime, err := b.detectContainerRuntime()
@@ -77,16 +98,14 @@ func (b *Builder) build(ctx context.Context) error {
 
 	// Step 2: Set up build parameters
 	buildContext := b.config.GetMpcRepoPath()
-	dockerfile := filepath.Join(buildContext, "Dockerfile")
+	dockerfile := filepath.Join(buildContext, dockerfileName)
 
 	// Verify Dockerfile exists
 	if _, err := os.Stat(dockerfile); err != nil {
 		return fmt.Errorf("dockerfile not found at %s: %w", dockerfile, err)
 	}
 
-	// Step 3: Define image tag
-	// Using a simple tag for now - can be made configurable later
-	imageTag := "multi-platform-controller:latest"
+	// Step 3: Log build parameters
 	log.Printf("Building image: %s", imageTag)
 	log.Printf("Build context: %s", buildContext)
 	log.Printf("Dockerfile: %s", dockerfile)
@@ -138,7 +157,7 @@ func (b *Builder) build(ctx context.Context) error {
 		return fmt.Errorf("build command failed: %w", err)
 	}
 
-	log.Println("MPC image build completed successfully")
+	log.Printf("Image build completed successfully: %s", imageTag)
 
 	// Step 6: Load image into Kind cluster
 	if err := b.loadImageIntoKind(ctx, imageTag); err != nil {

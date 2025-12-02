@@ -89,7 +89,7 @@ exit 0
 
 			otpDir := filepath.Join(cfg.MpcRepoPath, "deploy", "otp")
 			Expect(string(calls)).To(ContainSubstring("apply -k " + otpDir))
-			Expect(string(calls)).To(ContainSubstring("get deployment otp-server -n multi-platform-controller"))
+			Expect(string(calls)).To(ContainSubstring("get deployment multi-platform-otp-server -n multi-platform-controller"))
 		})
 	})
 })
