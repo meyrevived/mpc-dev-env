@@ -107,7 +107,7 @@ var _ = Describe("Builder", func() {
 				Skip("Skipping because mock 'kind' is detected as runtime.")
 			}
 
-			err = builder.build(context.Background())
+			err = builder.buildImage(context.Background(), "Dockerfile", "multi-platform-controller:latest")
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})

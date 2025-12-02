@@ -27,7 +27,7 @@ You must have these tools installed and available in your PATH:
 | kubectl | v1.31.1+ | Kubernetes cluster management |
 | Kind | v0.26.0+ | Local Kubernetes cluster |
 | **Podman** or Docker | v5.3.1+ (Podman) | Container runtime for building images |
-| Helm | v3.0.0+ | Kubernetes package management |
+| Helm | v3.0.0+ | Kubernetes package management (optional) |
 | Git | Any recent | Repository operations |
 | jq | Any recent | JSON parsing in scripts |
 
@@ -111,10 +111,11 @@ The `make dev-env` command runs through 8 phases:
    - Verifies cluster accessibility
    - Shows detailed error messages with log locations if creation fails
 
-4. **MPC Stack Deployment** (2-3 minutes)
+4. **MPC Stack Deployment** (3-4 minutes)
    - Deploys Tekton Pipelines (TaskRun engine)
+   - Deploys cert-manager (TLS certificates for OTP)
    - Deploys MPC Operator (controller)
-   - Deploys OTP Server (one-time passwords)
+   - Deploys OTP Server (one-time passwords) with TLS certificate
    - **Minimal deployment - only what MPC needs**
 
 5. **MPC Build & Deployment** (5-10 minutes)
@@ -432,23 +433,26 @@ What would you like to do next?
 
 **Why Minimal Stack:**
 
-The Multi-Platform Controller requires only three components to function:
+The Multi-Platform Controller requires only four components to function:
 
 1. **Tekton Pipelines** - TaskRun execution engine (required for running builds)
-2. **MPC Operator** - Controller deployment (the core MPC functionality)
-3. **OTP Server** - One-time password service (for secure access to build hosts)
+2. **cert-manager** - TLS certificate management (required for OTP server in Kind clusters)
+3. **MPC Operator** - Controller deployment (the core MPC functionality)
+4. **OTP Server** - One-time password service (for secure access to build hosts)
+
+**Note about cert-manager**: In production OpenShift clusters, the OTP server's TLS certificates are automatically created via the `service.beta.openshift.io/serving-cert-secret-name` annotation. Since Kind is vanilla Kubernetes without this OpenShift feature, we deploy cert-manager to provide the same functionality through self-signed certificates.
 
 The workflow order reflects these minimal dependencies:
 
 1. **Phase 3**: Create Kind cluster (the foundation)
-2. **Phase 4**: Deploy MPC stack (Tekton + MPC Operator + OTP)
+2. **Phase 4**: Deploy MPC stack (Tekton + cert-manager + MPC Operator + OTP)
 3. **Phase 5**: Build & deploy MPC (with your custom-built image)
 4. **Phase 6**: Deploy AWS secrets (only if TaskRun needs them) + Apply TaskRun
 
 In production environments, ArgoCD is used as a GitOps deployment tool, but for local development we apply the same manifests directly. This minimal approach:
 - Reduces setup time from 30-45 min to 10-20 min
-- Eliminates unnecessary dependencies (Kyverno, Dex, etc.)
-- Matches production MPC dependencies exactly
+- Eliminates unnecessary dependencies (Kyverno, Dex, ArgoCD, etc.)
+- Provides equivalent functionality to production (cert-manager replaces OpenShift's certificate signer)
 
 ## Troubleshooting
 
