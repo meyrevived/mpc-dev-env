@@ -28,6 +28,14 @@ if [ -z "${MPC_DEV_ENV_PATH:-}" ]; then
     export MPC_DEV_ENV_PATH="$(dirname "$SCRIPT_DIR")"
 fi
 
+# Set up session logging - capture all output to a timestamped log file
+# This helps with debugging issues on different machines
+LOGS_DIR="${MPC_DEV_ENV_PATH}/logs"
+mkdir -p "$LOGS_DIR"
+SESSION_LOG="${LOGS_DIR}/test-e2e_$(date '+%Y%m%d_%H%M%S').log"
+exec > >(tee -a "$SESSION_LOG") 2>&1
+echo "Session log: $SESSION_LOG"
+
 # Color codes for output (used by local logging functions with different prefixes)
 readonly COLOR_SUCCESS_LOCAL='\033[0;32m'
 readonly COLOR_ERROR_LOCAL='\033[0;31m'
