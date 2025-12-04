@@ -101,10 +101,11 @@ func NewManager() (*Manager, error) {
 //
 // This method orchestrates the entire TaskRun lifecycle:
 //  1. Parse and validate TaskRun YAML file
-//  2. Create TaskRun in the Kubernetes cluster
-//  3. Launch async goroutine to stream logs to file
-//  4. Monitor TaskRun status until completion (success/failure)
-//  5. Return final status
+//  2. Clean up any existing TaskRun with the same name (and its associated secrets)
+//  3. Create TaskRun in the Kubernetes cluster
+//  4. Launch async goroutine to stream logs to file
+//  5. Monitor TaskRun status until completion (success/failure)
+//  6. Return final status
 //
 // The log streaming happens asynchronously to avoid blocking status monitoring.
 // This ensures we can track TaskRun progress while simultaneously capturing all logs.
@@ -122,7 +123,14 @@ func (m *Manager) RunTaskRunWorkflow(ctx context.Context, yamlPath, logFilePath 
 		return "", "", fmt.Errorf("failed to parse TaskRun YAML: %w", err)
 	}
 
-	// Step 2: Apply TaskRun
+	// Step 2: Cleanup any existing TaskRun with the same name
+	// This ensures the multi-platform-ssh-* secret is cleaned up via finalizers
+	fmt.Printf("Cleaning up any existing TaskRun '%s'...\n", taskRun.Name)
+	if err := m.CleanupTaskRun(ctx, taskRun.Name); err != nil {
+		return "", "", fmt.Errorf("failed to cleanup existing TaskRun: %w", err)
+	}
+
+	// Step 3: Apply TaskRun
 	result, err := m.tektonClient.TektonV1().TaskRuns(namespace).Create(ctx, taskRun, metav1.CreateOptions{})
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create TaskRun: %w", err)
@@ -130,10 +138,10 @@ func (m *Manager) RunTaskRunWorkflow(ctx context.Context, yamlPath, logFilePath 
 
 	name = result.Name
 
-	// Step 3: Wait for pod to be created and stream logs
+	// Step 4: Wait for pod to be created and stream logs
 	go m.streamLogsAsync(ctx, name, logFilePath)
 
-	// Step 4: Monitor TaskRun until completion
+	// Step 5: Monitor TaskRun until completion
 	status, err = m.monitorTaskRun(ctx, name)
 	if err != nil {
 		return name, "", fmt.Errorf("failed to monitor TaskRun: %w", err)
@@ -278,6 +286,42 @@ func (m *Manager) streamContainerLogs(ctx context.Context, podName, containerNam
 
 	_, err = io.Copy(logFile, stream)
 	return err
+}
+
+// CleanupTaskRun deletes a TaskRun and waits for it to be fully cleaned up.
+//
+// This method deletes the TaskRun by name, which triggers MPC's finalizers to clean up
+// associated resources including the dynamically-created multi-platform-ssh-* secret.
+// It waits up to 30 seconds for the TaskRun to be fully deleted before returning.
+//
+// This is necessary when re-running TaskRuns with the same name, as MPC will skip
+// allocation if the secret from a previous run still exists.
+func (m *Manager) CleanupTaskRun(ctx context.Context, name string) error {
+	// Delete the TaskRun
+	err := m.tektonClient.TektonV1().TaskRuns(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		// If TaskRun doesn't exist, that's fine - nothing to clean up
+		return nil
+	}
+
+	// Wait for TaskRun to be fully deleted (finalizers to complete)
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("timeout waiting for TaskRun %s to be deleted", name)
+		case <-ticker.C:
+			_, err := m.tektonClient.TektonV1().TaskRuns(namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				// TaskRun is gone, we're done
+				return nil
+			}
+			// Still exists, keep waiting
+		}
+	}
 }
 
 // parseTaskRunYAML parses YAML data into a Tekton TaskRun object.
