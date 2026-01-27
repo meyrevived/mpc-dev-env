@@ -730,221 +730,297 @@ phase6_taskrun_workflow() {
     mkdir -p "$MPC_DEV_ENV_PATH/taskruns"
     mkdir -p "$MPC_DEV_ENV_PATH/logs"
 
-    # Prompt user for TaskRun selection FIRST
-    echo ""
-    echo "Do you want to apply a TaskRun?"
-    echo "[1] Use TaskRun from taskruns/ directory"
-    echo "[2] Provide path to TaskRun file"
-    echo "[3] Skip TaskRun"
-    echo ""
-
-    local choice
-    choice=$(read_choice "Your choice: " "3" "1 2 3")
-
-    local taskrun_file=""
-
-    case "$choice" in
-        1)
-            # List files in taskruns/ directory
-            log INFO "Available TaskRuns in taskruns/:"
-            if ! list_taskrun_files "$MPC_DEV_ENV_PATH/taskruns"; then
-                log ERROR "No TaskRun files found in taskruns/ directory"
-                log INFO "Please add TaskRun YAML files to taskruns/ and try again"
-                return 0
-            fi
-
-            echo ""
-            local selection
-            selection=$(read_choice "Select TaskRun number: " "1")
-
-            if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#TASKRUN_FILES[@]}" ]; then
-                log ERROR "Invalid selection"
-                return 1
-            fi
-
-            taskrun_file="${TASKRUN_FILES[$((selection-1))]}"
-            ;;
-
-        2)
-            # Prompt for file path
-            read -r -p "Enter path to TaskRun YAML file: " taskrun_file
-            taskrun_file="${taskrun_file/#\~/$HOME}"  # Expand tilde
-
-            if [ ! -f "$taskrun_file" ]; then
-                log ERROR "File not found: $taskrun_file"
-                return 1
-            fi
-            ;;
-
-        3)
-            log INFO "Skipping TaskRun"
-            return 0
-            ;;
-
-        *)
-            log ERROR "Invalid choice"
-            return 1
-            ;;
-    esac
-
-    # Parse PLATFORM parameter from TaskRun
-    echo ""
-    log_info "Analyzing TaskRun file: $(basename "$taskrun_file")"
-
-    local platform
-    platform=$(get_taskrun_platform "$taskrun_file")
-
-    if [ -z "$platform" ]; then
-        log_warning "TaskRun does not specify PLATFORM parameter"
-        log_info "Assuming local platform (no cloud credentials needed)"
+    # TaskRun workflow loop - keeps running until user explicitly exits
+    while true; do
+        # Prompt user for TaskRun selection
         echo ""
-        if ! prompt_yes_no "Continue with this TaskRun?"; then
-            log_info "TaskRun cancelled"
-            return 0
-        fi
-    else
-        log_info "Platform detected: $platform"
+        echo "TaskRun Menu:"
+        echo "[1] Run TaskRun from taskruns/ directory"
+        echo "[2] Provide path to TaskRun file"
+        echo "[3] Skip to summary (cluster stays running)"
+        echo "[4] Exit and cleanup (tears down cluster + daemon)"
+        echo ""
 
-        # Determine platform requirements
-        case "$platform" in
-            local|localhost|linux/x86_64)
-                # Local platform - check compatibility
-                log_info "Local platform detected, checking compatibility..."
-                if ! check_local_platform_compatible "$platform"; then
-                    # Incompatible, error already shown
-                    return 0  # Return to TaskRun selection
+        local choice
+        choice=$(read_choice "Your choice: " "3" "1 2 3 4")
+
+        local taskrun_file=""
+
+        case "$choice" in
+            1)
+                # List files in taskruns/ directory
+                log INFO "Available TaskRuns in taskruns/:"
+                if ! list_taskrun_files "$MPC_DEV_ENV_PATH/taskruns"; then
+                    log ERROR "No TaskRun files found in taskruns/ directory"
+                    log INFO "Please add TaskRun YAML files to taskruns/ and try again"
+                    echo ""
+                    sleep 2
+                    continue  # Return to menu
                 fi
-                log_success "System compatible with local platform"
-                # No credentials needed
+
+                echo ""
+                local selection
+                selection=$(read_choice "Select TaskRun number: " "1")
+
+                if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#TASKRUN_FILES[@]}" ]; then
+                    log ERROR "Invalid selection"
+                    echo ""
+                    sleep 2
+                    continue  # Return to menu
+                fi
+
+                taskrun_file="${TASKRUN_FILES[$((selection-1))]}"
                 ;;
 
-            linux/ppc64le|linux/s390x)
-                # IBM Cloud platform - not yet supported
-                echo ""
-                log_error "IBM Cloud platforms not yet supported"
-                log_error "Platform detected: $platform"
-                echo ""
-                log_error "IBM Cloud credential support is coming soon."
-                log_error "Please select a different TaskRun."
-                echo ""
-                return 0  # Return to TaskRun selection
+            2)
+                # Prompt for file path
+                read -r -p "Enter path to TaskRun YAML file: " taskrun_file
+                taskrun_file="${taskrun_file/#\~/$HOME}"  # Expand tilde
+
+                if [ ! -f "$taskrun_file" ]; then
+                    log ERROR "File not found: $taskrun_file"
+                    echo ""
+                    sleep 2
+                    continue  # Return to menu
+                fi
+                ;;
+
+            3)
+                log INFO "Skipping to summary..."
+                return 0  # Exit loop, continue to phase 8
+                ;;
+
+            4)
+                log INFO "Exiting and cleaning up..."
+                cleanup_level_6
+                exit 0
                 ;;
 
             *)
-                # AWS platform - need credentials
-                log_info "AWS platform detected: $platform"
-
-                # Check if saved credentials exist
-                if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-                    log_info "Found saved AWS credentials, validating..."
-
-                    # Validate saved credentials
-                    if validate_aws_credentials; then
-                        log_success "Using saved credentials"
-                    else
-                        # Validation failed, prompt for new credentials
-                        if ! prompt_for_aws_credentials; then
-                            # User cancelled or validation failed
-                            return 0  # Return to TaskRun selection
-                        fi
-                    fi
-                else
-                    # No saved credentials, prompt
-                    if ! prompt_for_aws_credentials; then
-                        # User cancelled or validation failed
-                        return 0  # Return to TaskRun selection
-                    fi
-                fi
-
-                # Credentials are now validated, collect SSH key
+                log ERROR "Invalid choice"
                 echo ""
-                local ssh_key_path
-                local default_ssh_key="${HOME}/.ssh/id_rsa"
-                prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
-
-                # Validate SSH key exists
-                if ! file_exists "$ssh_key_path"; then
-                    log_error "SSH key file does not exist: $ssh_key_path"
-                    return 0
-                fi
-                log_success "SSH key verified: $ssh_key_path"
-
-                export SSH_KEY_PATH="$ssh_key_path"
-
-                # Deploy secrets via daemon API
-                log_info "Deploying AWS secrets to cluster..."
-                local response
-                response=$(api_call POST "/api/deploy/secrets")
-
-                if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
-                    log_error "Failed to deploy AWS secrets"
-                    local error_msg
-                    error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
-                    log_error "Error: $error_msg"
-                    return 0
-                fi
-
-                # Wait for secrets to be deployed
-                log_info "Waiting for secrets deployment to complete..."
-                local max_wait=60
-                local elapsed=0
-                local check_interval=2
-                sleep 5
-
-                local secrets_ready=false
-                while [ $elapsed -lt $max_wait ]; do
-                    # Check for daemon errors
-                    local daemon_response
-                    daemon_response=$(daemon_get_status)
-                    local last_error
-                    last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
-                    if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
-                        log_error "Daemon reported error: $last_error"
-                        return 0
-                    fi
-
-                    if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
-                       kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-                        secrets_ready=true
-                        break
-                    fi
-                    log_info "Waiting for secrets... ($elapsed/$max_wait seconds)"
-                    sleep $check_interval
-                    elapsed=$((elapsed + check_interval))
-                done
-
-                if [ "$secrets_ready" = false ]; then
-                    log_error "Timeout waiting for secrets deployment"
-                    return 0
-                fi
-
-                log_success "AWS secrets deployed successfully"
+                sleep 2
+                continue  # Return to menu
                 ;;
         esac
-    fi
 
-    echo ""
+        # Parse PLATFORM parameter from TaskRun
+        echo ""
+        log_info "Analyzing TaskRun file: $(basename "$taskrun_file")"
 
-    echo ""
+        local platform
+        platform=$(get_taskrun_platform "$taskrun_file")
 
-    # Trigger TaskRun workflow via API
-    log INFO "Starting TaskRun workflow: $(basename "$taskrun_file")"
+        if [ -z "$platform" ]; then
+            log_warning "TaskRun does not specify PLATFORM parameter"
+            log_info "Assuming local platform (no cloud credentials needed)"
+            echo ""
+            if ! prompt_yes_no "Continue with this TaskRun?"; then
+                log_info "TaskRun cancelled"
+                echo ""
+                sleep 2
+                continue  # Return to menu
+            fi
+        else
+            log_info "Platform detected: $platform"
 
-    local response
-    response=$(api_call POST "/api/taskrun/run" "{\"yaml_path\": \"$taskrun_file\"}")
+            # Determine platform requirements
+            case "$platform" in
+                local|localhost|linux/x86_64)
+                    # Local platform - check compatibility
+                    log_info "Local platform detected, checking compatibility..."
+                    if ! check_local_platform_compatible "$platform"; then
+                        # Incompatible, error already shown
+                        echo ""
+                        sleep 2
+                        continue  # Return to TaskRun selection
+                    fi
+                    log_success "System compatible with local platform"
+                    # No credentials needed
+                    ;;
 
-    if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
-        log ERROR "Failed to start TaskRun workflow"
-        local error_msg
-        error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
-        log ERROR "Error: $error_msg"
-        return 1
-    fi
+                linux/ppc64le|linux/s390x)
+                    # IBM Cloud platform - not yet supported
+                    echo ""
+                    log_error "IBM Cloud platforms not yet supported"
+                    log_error "Platform detected: $platform"
+                    echo ""
+                    log_error "IBM Cloud credential support is coming soon."
+                    log_error "Please select a different TaskRun."
+                    echo ""
+                    sleep 2
+                    continue  # Return to TaskRun selection
+                    ;;
 
-    log SUCCESS "TaskRun workflow started"
+                *)
+                    # AWS platform - need credentials with retry logic
+                    log_info "AWS platform detected: $platform"
 
-    # Move to Phase 7 for monitoring
-    phase7_monitoring
+                    # Credential validation loop
+                    local credentials_valid=false
+                    while [ "$credentials_valid" = false ]; do
+                        # Check if saved credentials exist
+                        if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+                            log_info "Found saved AWS credentials, validating..."
+
+                            # Validate saved credentials
+                            if validate_aws_credentials; then
+                                log_success "Using saved credentials"
+                                credentials_valid=true
+                                break
+                            else
+                                log_warning "Saved credentials are invalid"
+                            fi
+                        fi
+
+                        # Prompt for credentials
+                        if ! prompt_for_aws_credentials; then
+                            # User cancelled
+                            echo ""
+                            log_info "Do you want to:"
+                            echo "[1] Try entering credentials again"
+                            echo "[2] Return to TaskRun menu"
+                            echo ""
+                            local retry_choice
+                            retry_choice=$(read_choice "Your choice: " "2" "1 2")
+
+                            if [ "$retry_choice" = "2" ]; then
+                                continue 2  # Break out to main TaskRun menu
+                            fi
+                            # Otherwise loop continues and prompts again
+                        else
+                            # Credentials validated successfully
+                            credentials_valid=true
+                        fi
+                    done
+
+                    # Credentials are now validated, collect SSH key
+                    echo ""
+                    local ssh_key_path
+                    local default_ssh_key="${HOME}/.ssh/id_rsa"
+                    prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
+
+                    # Validate SSH key exists
+                    if ! file_exists "$ssh_key_path"; then
+                        log_error "SSH key file does not exist: $ssh_key_path"
+                        echo ""
+                        sleep 2
+                        continue  # Return to menu
+                    fi
+                    log_success "SSH key verified: $ssh_key_path"
+
+                    export SSH_KEY_PATH="$ssh_key_path"
+
+                    # Save SSH key path if credentials were saved
+                    if [ "${AWS_CREDENTIAL_AUTO_USE:-false}" = "true" ]; then
+                        save_config
+                        log_info "SSH key path saved to .env.local"
+                    fi
+
+                    # Deploy secrets via daemon API
+                    log_info "Deploying AWS secrets to cluster..."
+
+                    # Create JSON payload with credentials
+                    local credentials_json
+                    credentials_json=$(jq -n \
+                        --arg access_key "$AWS_ACCESS_KEY_ID" \
+                        --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
+                        --arg ssh_key "$ssh_key_path" \
+                        '{
+                            aws_access_key_id: $access_key,
+                            aws_secret_access_key: $secret_key,
+                            ssh_key_path: $ssh_key
+                        }')
+
+                    local response
+                    response=$(api_call POST "/api/deploy/secrets" "$credentials_json")
+
+                    if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+                        log_error "Failed to deploy AWS secrets"
+                        local error_msg
+                        error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
+                        log_error "Error: $error_msg"
+                        echo ""
+                        log_info "Returning to TaskRun menu..."
+                        sleep 2
+                        continue  # Return to menu
+                    fi
+
+                    # Wait for secrets to be deployed
+                    log_info "Waiting for secrets deployment to complete..."
+                    local max_wait=60
+                    local elapsed=0
+                    local check_interval=2
+                    sleep 5
+
+                    local secrets_ready=false
+                    while [ $elapsed -lt $max_wait ]; do
+                        # Check for daemon errors
+                        local daemon_response
+                        daemon_response=$(daemon_get_status)
+                        local last_error
+                        last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
+                        if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
+                            log_error "Daemon reported error: $last_error"
+                            echo ""
+                            log_info "Returning to TaskRun menu..."
+                            sleep 2
+                            continue 2  # Return to main menu
+                        fi
+
+                        if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
+                           kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+                            secrets_ready=true
+                            break
+                        fi
+                        log_info "Waiting for secrets... ($elapsed/$max_wait seconds)"
+                        sleep $check_interval
+                        elapsed=$((elapsed + check_interval))
+                    done
+
+                    if [ "$secrets_ready" = false ]; then
+                        log_error "Timeout waiting for secrets deployment"
+                        echo ""
+                        log_info "Returning to TaskRun menu..."
+                        sleep 2
+                        continue  # Return to menu
+                    fi
+
+                    log_success "AWS secrets deployed successfully"
+                    ;;
+            esac
+        fi
+
+        echo ""
+
+        # Trigger TaskRun workflow via API
+        log INFO "Starting TaskRun workflow: $(basename "$taskrun_file")"
+
+        local response
+        response=$(api_call POST "/api/taskrun/run" "{\"yaml_path\": \"$taskrun_file\"}")
+
+        if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+            log ERROR "Failed to start TaskRun workflow"
+            local error_msg
+            error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
+            log ERROR "Error: $error_msg"
+            echo ""
+            log_info "Returning to TaskRun menu..."
+            sleep 2
+            continue  # Return to menu
+        fi
+
+        log SUCCESS "TaskRun workflow started"
+
+        # Move to Phase 7 for monitoring
+        # Note: phase7_monitoring may call phase6_taskrun_workflow recursively
+        # via cleanup_level_5, but we handle that gracefully
+        phase7_monitoring
+
+        # After monitoring completes, return to menu
+        # (unless phase7 triggered another TaskRun via cleanup_level_5)
+        continue
+    done  # End of TaskRun workflow loop
 }
 
 phase7_monitoring() {
@@ -1003,26 +1079,44 @@ phase7_monitoring() {
     echo "========================================"
 
     # Handle Level 5 cleanup/options
+    # Note: cleanup_level_5 handles exits (options 4-6) directly
+    # For options 1-3, we return to let phase6 loop continue
     local level5_result
     cleanup_level_5 "$taskrun_name" "$taskrun_status" "$log_file"
     level5_result=$?
 
     case $level5_result in
         1)
-            # Apply another TaskRun
-            phase6_taskrun_workflow
+            # Apply another TaskRun - return to phase6 loop
+            log_info "Returning to TaskRun menu..."
+            return 0
             ;;
         2)
             # Rebuild MPC only
             if rebuild_mpc_only; then
-                # After rebuild, show Level 5 menu again
-                cleanup_level_5 "$taskrun_name" "N/A - MPC rebuilt" "$log_file"
+                log_success "MPC rebuild complete"
+                echo ""
+                log_info "Returning to TaskRun menu..."
+                return 0
+            else
+                log_error "MPC rebuild failed"
+                echo ""
+                log_info "Returning to TaskRun menu..."
+                return 0
             fi
             ;;
         3)
             # Rebuild MPC + apply new TaskRun
             if rebuild_mpc_only; then
-                phase6_taskrun_workflow
+                log_success "MPC rebuild complete"
+                echo ""
+                log_info "Returning to TaskRun menu..."
+                return 0
+            else
+                log_error "MPC rebuild failed"
+                echo ""
+                log_info "Returning to TaskRun menu..."
+                return 0
             fi
             ;;
     esac

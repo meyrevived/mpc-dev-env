@@ -278,4 +278,91 @@ var _ = Describe("Handlers", func() {
 			Expect(filename).To(HaveSuffix(".log"))
 		})
 	})
+
+	Describe("DeploySecretsHandler", func() {
+		It("should accept POST requests with credentials in request body", func() {
+			requestBody := `{
+				"aws_access_key_id": "test-key-id",
+				"aws_secret_access_key": "test-secret-key",
+				"ssh_key_path": "/path/to/ssh/key"
+			}`
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			handlers.DeploySecretsHandler(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusAccepted))
+			Expect(rr.Header().Get("Content-Type")).To(Equal("application/json"))
+
+			var response map[string]string
+			err := json.NewDecoder(rr.Body).Decode(&response)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response["status"]).To(Equal("accepted"))
+		})
+
+		It("should return 400 Bad Request for invalid JSON", func() {
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader("invalid json"))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			handlers.DeploySecretsHandler(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should return 400 Bad Request when AWS credentials are missing", func() {
+			requestBody := `{
+				"ssh_key_path": "/path/to/ssh/key"
+			}`
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			handlers.DeploySecretsHandler(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should return 400 Bad Request when SSH key path is missing", func() {
+			requestBody := `{
+				"aws_access_key_id": "test-key-id",
+				"aws_secret_access_key": "test-secret-key"
+			}`
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			handlers.DeploySecretsHandler(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("should return 405 Method Not Allowed for GET requests", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/deploy/secrets", nil)
+			rr := httptest.NewRecorder()
+
+			handlers.DeploySecretsHandler(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusMethodNotAllowed))
+		})
+
+		It("should return immediately without waiting for deployment", func() {
+			requestBody := `{
+				"aws_access_key_id": "test-key-id",
+				"aws_secret_access_key": "test-secret-key",
+				"ssh_key_path": "/path/to/ssh/key"
+			}`
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			start := time.Now()
+			handlers.DeploySecretsHandler(rr, req)
+			duration := time.Since(start)
+
+			Expect(duration).To(BeNumerically("<", 100*time.Millisecond))
+			Expect(rr.Code).To(Equal(http.StatusAccepted))
+		})
+	})
 })
