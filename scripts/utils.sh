@@ -233,10 +233,15 @@ load_config() {
     fi
 }
 
-# save_config - Save environment paths to configuration file
+# save_config - Save environment paths and AWS credentials to configuration file
 #
-# Writes MPC_DEV_ENV_PATH and MPC_REPO_PATH to .env.local for persistence.
+# Writes configuration to .env.local for persistence.
 # Creates the file if it doesn't exist, overwrites if it does.
+#
+# Saved variables:
+#   - MPC_DEV_ENV_PATH, MPC_REPO_PATH (always saved)
+#   - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (if set)
+#   - AWS_CREDENTIAL_AUTO_USE (if set)
 #
 # Side effects:
 #   - Creates or updates .env.local file
@@ -246,6 +251,7 @@ save_config() {
 
     log_info "Saving configuration to: $config_file"
 
+    # Start with base configuration
     cat > "$config_file" << EOF
 # MPC Dev Environment Configuration
 # Generated automatically - edit with caution
@@ -255,6 +261,18 @@ save_config() {
 MPC_DEV_ENV_PATH="${MPC_DEV_ENV_PATH}"
 MPC_REPO_PATH="${MPC_REPO_PATH}"
 EOF
+
+    # Append AWS credentials if they exist
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        cat >> "$config_file" << EOF
+
+# AWS Credential Configuration
+AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_CREDENTIAL_AUTO_USE=${AWS_CREDENTIAL_AUTO_USE:-false}
+EOF
+    fi
 
     log_success "Configuration saved"
 }
@@ -374,4 +392,102 @@ validate_and_set_env_paths() {
     fi
 
     return 0
+}
+
+# check_aws_cli_installed - Check if AWS CLI is available
+#
+# Returns:
+#   0 if aws command is available
+#   1 if not available (shows error message)
+check_aws_cli_installed() {
+    if ! command -v aws &> /dev/null; then
+        echo ""
+        log_error "AWS CLI is required to validate credentials"
+        echo ""
+        log_error "AWS CLI not found. Please install it:"
+        log_error "  - macOS: brew install awscli"
+        log_error "  - Linux: pip3 install --user awscli"
+        log_error "  - Official: https://aws.amazon.com/cli/"
+        echo ""
+        log_error "After installation, re-run this TaskRun."
+        echo ""
+        return 1
+    fi
+    return 0
+}
+
+# validate_aws_credentials - Validate AWS credentials with retry logic
+#
+# Attempts to validate AWS credentials by calling aws sts get-caller-identity.
+# Retries up to 3 times with 2-minute waits between attempts.
+#
+# Environment variables required:
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#   AWS_REGION
+#
+# Returns:
+#   0 if credentials are valid
+#   1 if validation failed after 3 attempts
+validate_aws_credentials() {
+    local max_attempts=3
+    local wait_seconds=120  # 2 minutes
+    local attempt=1
+
+    # Check if AWS CLI is installed
+    if ! check_aws_cli_installed; then
+        return 1
+    fi
+
+    while [ $attempt -le $max_attempts ]; do
+        log_info "Validating credentials..."
+
+        # Try to call AWS STS and capture output
+        local aws_output
+        aws_output=$(aws sts get-caller-identity 2>&1)
+        local exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            log_success "Credentials validated successfully"
+            return 0
+        fi
+
+        # Validation failed
+        log_error "Credential validation failed (Attempt $attempt/$max_attempts)"
+        echo ""
+        log_error "AWS STS call failed. Possible reasons:"
+        log_error "  - Invalid Access Key ID or Secret Access Key"
+        log_error "  - Network connectivity issues"
+        log_error "  - AWS service outage"
+        echo ""
+
+        # Show AWS error
+        if [ -n "$aws_output" ]; then
+            log_error "AWS Error: $aws_output"
+            echo ""
+        fi
+
+        # If not the last attempt, wait and retry
+        if [ $attempt -lt $max_attempts ]; then
+            log_info "Retrying in 2 minutes... (Press Ctrl+C to cancel)"
+
+            # Countdown timer
+            local remaining=$wait_seconds
+            while [ $remaining -gt 0 ]; do
+                printf "\rRetrying in %d seconds...  " $remaining
+                sleep 1
+                remaining=$((remaining - 1))
+            done
+            echo ""  # New line after countdown
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    # All attempts failed
+    log_error "Credential validation failed after $max_attempts attempts"
+    echo ""
+    log_error "Unable to validate AWS credentials."
+    echo ""
+    return 1
 }

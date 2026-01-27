@@ -200,6 +200,44 @@ Logs are saved in the `logs/` directory with timestamps:
 
 **Log filename format**: `<taskrun-name>_YYYYMMDD_HHMMSS.log`
 
+### AWS Credential Persistence
+
+The dev-env tool now intelligently manages AWS credentials based on your TaskRun's platform requirements:
+
+**Platform Detection:**
+- **Local platforms** (`local`, `localhost`, `linux/x86_64`): No credentials needed
+  - Validates your system is Linux x86_64 before proceeding
+- **AWS platforms** (`linux/arm64`, `linux/amd64`, etc.): Prompts for credentials if needed
+- **IBM platforms** (`linux/ppc64le`, `linux/s390x`): Not yet supported
+
+**Credential Storage:**
+
+AWS credentials are stored in `.env.local` for reuse across sessions:
+
+```bash
+AWS_ACCESS_KEY_ID="AKIA..."
+AWS_SECRET_ACCESS_KEY="..."
+AWS_REGION="us-east-1"
+AWS_CREDENTIAL_AUTO_USE=true
+```
+
+**First Run:**
+1. Select an AWS platform TaskRun
+2. Enter your AWS Access Key ID and Secret Access Key
+3. Choose whether to save credentials
+4. If saved, credentials are validated automatically in future sessions
+
+**Updating Credentials:**
+
+To update saved credentials:
+- Option 1: Edit `.env.local` directly
+- Option 2: Run a TaskRun, credentials will be re-prompted if validation fails
+- Option 3: Delete AWS_* lines from `.env.local` to start fresh
+
+**Requirements:**
+- AWS CLI must be installed for credential validation
+- Install: `brew install awscli` (macOS) or `pip3 install --user awscli` (Linux)
+
 ## Cleanup Options
 
 The tool offers intelligent cleanup at every failure point and after TaskRun completion.

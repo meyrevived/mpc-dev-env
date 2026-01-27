@@ -26,10 +26,8 @@ bin/
 goland-plugin/build/
 goland-plugin/.gradle/
 
-# gemini ignore stuff
-.geminiignore
-
 # claude stuff
 .claude
 sst
-gemini
+prompts
+docs/

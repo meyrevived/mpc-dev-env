@@ -7,14 +7,12 @@
 #
 # Phase 1: Prerequisites validation (checks tools, paths, builds daemon)
 # Phase 2: Daemon startup (starts API server on port 8765)
-# Phase 3: Credential collection (prompts for AWS credentials if needed)
-# Phase 4: Cluster setup (creates Kind cluster via daemon API)
-# Phase 5: MPC stack deployment (deploys Tekton + MPC Operator + OTP)
-# Phase 6: MPC build & deployment (builds custom image, patches deployment)
-# Phase 7: Secrets deployment (AWS secrets for cloud builds, if needed)
-# Phase 8: TaskRun workflow (user selects and applies TaskRun)
-# Phase 9: Build verification (monitors TaskRun, streams logs)
-# Phase 10: Summary output (shows status, useful commands)
+# Phase 3: Cluster setup (creates Kind cluster via daemon API)
+# Phase 4: MPC stack deployment (deploys Tekton + MPC Operator + OTP)
+# Phase 5: MPC build & deployment (builds custom image, patches deployment)
+# Phase 6: TaskRun workflow (selects TaskRun, detects platform requirements, smart credential handling, applies)
+# Phase 7: TaskRun monitoring (monitors TaskRun, streams logs)
+# Phase 8: Summary output (shows status, useful commands)
 #
 # Design Philosophy:
 #   - User interaction layer: This bash script handles ALL user prompts and menus
@@ -122,6 +120,206 @@ check_taskrun_uses_local_platforms() {
     else
         return 1  # No local platforms found
     fi
+}
+
+# get_taskrun_platform - Extract PLATFORM parameter from TaskRun YAML
+#
+# Uses yq to parse the TaskRun YAML and extract the PLATFORM parameter value.
+# Returns empty string if PLATFORM parameter not found.
+#
+# Arguments:
+#   $1 - Path to TaskRun YAML file
+#
+# Outputs:
+#   Platform value (e.g., "linux/arm64", "local", "localhost") to stdout
+#
+# Returns:
+#   0 on success (even if PLATFORM not found)
+#   1 on file not found error
+get_taskrun_platform() {
+    local taskrun_file="$1"
+
+    if [ ! -f "$taskrun_file" ]; then
+        log_error "TaskRun file not found: $taskrun_file"
+        return 1
+    fi
+
+    # Check if yq is available
+    if ! command -v yq &> /dev/null; then
+        log_warning "yq not found, cannot parse PLATFORM parameter" >&2
+        return 0
+    fi
+
+    # Extract PLATFORM parameter using yq
+    local platform
+    platform=$(yq eval '.spec.params[] | select(.name == "PLATFORM") | .value' "$taskrun_file" 2>/dev/null || true)
+
+    # Output the platform value (may be empty)
+    echo "$platform"
+    return 0
+}
+
+# check_local_platform_compatible - Verify host can run local platform TaskRun
+#
+# Checks if the host OS and architecture match requirements for local execution.
+# Local platforms require Linux x86_64.
+#
+# Arguments:
+#   $1 - Platform value ("local", "localhost", or "linux/x86_64")
+#
+# Returns:
+#   0 if compatible (Linux x86_64)
+#   1 if incompatible (shows error message and returns)
+check_local_platform_compatible() {
+    local platform="$1"
+
+    # Detect host OS and architecture
+    local host_os
+    local host_arch
+    host_os=$(uname -s)
+    host_arch=$(uname -m)
+
+    # Check if compatible
+    if [ "$host_os" != "Linux" ] || [ "$host_arch" != "x86_64" ]; then
+        echo ""
+        log_error "TaskRun requires local execution on Linux x86_64"
+        log_error "Your system: $host_os $host_arch"
+        echo ""
+        log_error "This TaskRun cannot run on your machine."
+        log_error "Please select a different TaskRun."
+        echo ""
+        return 1
+    fi
+
+    return 0
+}
+
+# prompt_for_aws_credentials - Interactive menu for AWS credential collection
+#
+# Shows adaptive menu based on whether saved credentials exist.
+# Handles credential input, validation, and persistence preferences.
+#
+# Side effects:
+#   - Sets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION env vars
+#   - Sets AWS_CREDENTIAL_AUTO_USE if user chooses to save
+#   - May call save_config to persist credentials
+#
+# Returns:
+#   0 if credentials collected successfully
+#   1 if user chose to skip or validation failed
+prompt_for_aws_credentials() {
+    echo ""
+    log_info "AWS credentials needed for this TaskRun."
+    echo ""
+
+    # Check if saved credentials exist
+    local has_saved_creds=false
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        has_saved_creds=true
+    fi
+
+    # Show adaptive menu
+    if [ "$has_saved_creds" = true ]; then
+        # Saved credentials exist (but may be invalid if we got here)
+        log_info "Saved credentials are invalid or expired."
+        echo ""
+        log_info "How do you want to provide AWS credentials?"
+        log_info "  1) Enter new credentials manually"
+        log_info "  2) Skip this TaskRun (return to TaskRun selection)"
+        echo ""
+
+        local choice
+        choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
+
+        case "$choice" in
+            1) ;;  # Continue to credential input
+            2)
+                log_info "Skipping TaskRun"
+                return 1
+                ;;
+            *)
+                log_error "Invalid choice"
+                return 1
+                ;;
+        esac
+    else
+        # No saved credentials
+        log_info "How do you want to provide AWS credentials?"
+        log_info "  1) Enter credentials manually (AWS Access Key + Secret Key)"
+        log_info "  2) Skip this TaskRun (return to TaskRun selection)"
+        echo ""
+
+        local choice
+        choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
+
+        case "$choice" in
+            1) ;;  # Continue to credential input
+            2)
+                log_info "Skipping TaskRun"
+                return 1
+                ;;
+            *)
+                log_error "Invalid choice"
+                return 1
+                ;;
+        esac
+    fi
+
+    # Collect credentials
+    echo ""
+    local aws_access_key_id
+    prompt_user "Enter AWS Access Key ID" aws_access_key_id
+
+    local aws_secret_access_key
+    read -r -s -p "Enter AWS Secret Access Key: " aws_secret_access_key
+    echo  # Print newline after hidden input
+
+    local aws_region
+    prompt_user "Enter AWS Region" aws_region "us-east-1"
+
+    # Export for validation
+    export AWS_ACCESS_KEY_ID="$aws_access_key_id"
+    export AWS_SECRET_ACCESS_KEY="$aws_secret_access_key"
+    export AWS_REGION="$aws_region"
+
+    echo ""
+
+    # Validate credentials (with retry logic)
+    if ! validate_aws_credentials; then
+        # Validation failed after retries, show menu again
+        return 1
+    fi
+
+    # Ask about persistence
+    echo ""
+    log_info "Credential setup complete."
+    echo ""
+    log_info "Do you want to save these credentials for future sessions?"
+    log_info "  1) Yes - save to .env.local (skip credential prompts in future)"
+    log_info "  2) No - use for this session only (ask again next time)"
+    echo ""
+
+    local persist_choice
+    persist_choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
+
+    case "$persist_choice" in
+        1)
+            export AWS_CREDENTIAL_AUTO_USE=true
+            save_config
+            log_success "Credentials saved to .env.local"
+            ;;
+        2)
+            export AWS_CREDENTIAL_AUTO_USE=false
+            log_info "Using credentials for this session only"
+            ;;
+        *)
+            log_error "Invalid choice, using credentials for session only"
+            export AWS_CREDENTIAL_AUTO_USE=false
+            ;;
+    esac
+
+    echo ""
+    return 0
 }
 
 # ============================================================================
@@ -589,102 +787,143 @@ phase6_taskrun_workflow() {
             ;;
     esac
 
-    # Now check if the TaskRun uses local platforms
+    # Parse PLATFORM parameter from TaskRun
     echo ""
-    log INFO "Analyzing TaskRun file: $(basename "$taskrun_file")"
+    log_info "Analyzing TaskRun file: $(basename "$taskrun_file")"
 
-    if check_taskrun_uses_local_platforms "$taskrun_file"; then
-        log SUCCESS "Detected local platform usage (localhost/local/x86_64)"
-        log INFO "Skipping AWS credential collection - not needed for local platforms"
-    else
-        log INFO "No local platform indicators found in TaskRun"
-        log INFO "AWS credentials may be needed for cloud platforms"
+    local platform
+    platform=$(get_taskrun_platform "$taskrun_file")
+
+    if [ -z "$platform" ]; then
+        log_warning "TaskRun does not specify PLATFORM parameter"
+        log_info "Assuming local platform (no cloud credentials needed)"
         echo ""
-        log INFO "AWS credentials are required for these platforms:"
-        log INFO "  - linux/arm64, linux/amd64, linux-mlarge/arm64, linux-mlarge/amd64"
-        echo ""
-
-        if prompt_yes_no "Does your TaskRun use AWS platforms and need AWS secrets deployed?"; then
-            log INFO "Collecting AWS credentials for secrets deployment..."
-
-            # Prompt for AWS Access Key ID
-            local aws_access_key_id
-            prompt_user "Enter AWS Access Key ID" aws_access_key_id
-
-            # Prompt for AWS Secret Access Key (hide input)
-            local aws_secret_access_key
-            read -r -s -p "Enter AWS Secret Access Key: " aws_secret_access_key
-            echo  # Print newline after hidden input
-
-            # Prompt for SSH key path with default
-            local ssh_key_path
-            local default_ssh_key="${HOME}/.ssh/id_rsa"
-            prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
-
-            # Validate that SSH key file exists
-            if ! file_exists "$ssh_key_path"; then
-                log ERROR "SSH key file does not exist: $ssh_key_path"
-                return 1
-            fi
-            log SUCCESS "SSH key verified: $ssh_key_path"
-
-            # Export credentials as environment variables
-            export AWS_ACCESS_KEY_ID="$aws_access_key_id"
-            export AWS_SECRET_ACCESS_KEY="$aws_secret_access_key"
-            export SSH_KEY_PATH="$ssh_key_path"
-
-            # Deploy secrets via daemon API (Go code)
-            log INFO "Deploying AWS secrets to cluster..."
-            local response
-            response=$(api_call POST "/api/deploy/secrets")
-
-            if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
-                log ERROR "Failed to deploy AWS secrets"
-                local error_msg
-                error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
-                log ERROR "Error: $error_msg"
-                return 1
-            fi
-
-            # Wait for secrets to be deployed
-            log INFO "Waiting for secrets deployment to complete..."
-            local max_wait=60
-            local elapsed=0
-            local check_interval=2
-            sleep 5
-
-            local secrets_ready=false
-            while [ $elapsed -lt $max_wait ]; do
-                # First check if daemon reported an error
-                local daemon_response
-                daemon_response=$(daemon_get_status)
-                local last_error
-                last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
-                if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
-                    log ERROR "Daemon reported error: $last_error"
-                    return 1
-                fi
-
-                if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
-                   kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-                    secrets_ready=true
-                    break
-                fi
-                log INFO "Waiting for secrets... ($elapsed/$max_wait seconds)"
-                sleep $check_interval
-                elapsed=$((elapsed + check_interval))
-            done
-
-            if [ "$secrets_ready" = false ]; then
-                log ERROR "Timeout waiting for secrets deployment"
-                return 1
-            fi
-
-            log SUCCESS "AWS secrets deployed successfully"
-        else
-            log INFO "Skipping AWS secrets deployment"
+        if ! prompt_yes_no "Continue with this TaskRun?"; then
+            log_info "TaskRun cancelled"
+            return 0
         fi
+    else
+        log_info "Platform detected: $platform"
+
+        # Determine platform requirements
+        case "$platform" in
+            local|localhost|linux/x86_64)
+                # Local platform - check compatibility
+                log_info "Local platform detected, checking compatibility..."
+                if ! check_local_platform_compatible "$platform"; then
+                    # Incompatible, error already shown
+                    return 0  # Return to TaskRun selection
+                fi
+                log_success "System compatible with local platform"
+                # No credentials needed
+                ;;
+
+            linux/ppc64le|linux/s390x)
+                # IBM Cloud platform - not yet supported
+                echo ""
+                log_error "IBM Cloud platforms not yet supported"
+                log_error "Platform detected: $platform"
+                echo ""
+                log_error "IBM Cloud credential support is coming soon."
+                log_error "Please select a different TaskRun."
+                echo ""
+                return 0  # Return to TaskRun selection
+                ;;
+
+            *)
+                # AWS platform - need credentials
+                log_info "AWS platform detected: $platform"
+
+                # Check if saved credentials exist
+                if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+                    log_info "Found saved AWS credentials, validating..."
+
+                    # Validate saved credentials
+                    if validate_aws_credentials; then
+                        log_success "Using saved credentials"
+                    else
+                        # Validation failed, prompt for new credentials
+                        if ! prompt_for_aws_credentials; then
+                            # User cancelled or validation failed
+                            return 0  # Return to TaskRun selection
+                        fi
+                    fi
+                else
+                    # No saved credentials, prompt
+                    if ! prompt_for_aws_credentials; then
+                        # User cancelled or validation failed
+                        return 0  # Return to TaskRun selection
+                    fi
+                fi
+
+                # Credentials are now validated, collect SSH key
+                echo ""
+                local ssh_key_path
+                local default_ssh_key="${HOME}/.ssh/id_rsa"
+                prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
+
+                # Validate SSH key exists
+                if ! file_exists "$ssh_key_path"; then
+                    log_error "SSH key file does not exist: $ssh_key_path"
+                    return 0
+                fi
+                log_success "SSH key verified: $ssh_key_path"
+
+                export SSH_KEY_PATH="$ssh_key_path"
+
+                # Deploy secrets via daemon API
+                log_info "Deploying AWS secrets to cluster..."
+                local response
+                response=$(api_call POST "/api/deploy/secrets")
+
+                if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+                    log_error "Failed to deploy AWS secrets"
+                    local error_msg
+                    error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
+                    log_error "Error: $error_msg"
+                    return 0
+                fi
+
+                # Wait for secrets to be deployed
+                log_info "Waiting for secrets deployment to complete..."
+                local max_wait=60
+                local elapsed=0
+                local check_interval=2
+                sleep 5
+
+                local secrets_ready=false
+                while [ $elapsed -lt $max_wait ]; do
+                    # Check for daemon errors
+                    local daemon_response
+                    daemon_response=$(daemon_get_status)
+                    local last_error
+                    last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
+                    if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
+                        log_error "Daemon reported error: $last_error"
+                        return 0
+                    fi
+
+                    if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
+                       kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+                        secrets_ready=true
+                        break
+                    fi
+                    log_info "Waiting for secrets... ($elapsed/$max_wait seconds)"
+                    sleep $check_interval
+                    elapsed=$((elapsed + check_interval))
+                done
+
+                if [ "$secrets_ready" = false ]; then
+                    log_error "Timeout waiting for secrets deployment"
+                    return 0
+                fi
+
+                log_success "AWS secrets deployed successfully"
+                ;;
+        esac
     fi
+
+    echo ""
 
     echo ""
 
