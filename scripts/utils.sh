@@ -240,7 +240,7 @@ load_config() {
 #
 # Saved variables:
 #   - MPC_DEV_ENV_PATH, MPC_REPO_PATH (always saved)
-#   - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (if set)
+#   - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, SSH_KEY_PATH (if set)
 #   - AWS_CREDENTIAL_AUTO_USE (if set)
 #
 # Side effects:
@@ -272,6 +272,13 @@ AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 AWS_CREDENTIAL_AUTO_USE=${AWS_CREDENTIAL_AUTO_USE:-false}
 EOF
+
+        # Append SSH key path if it exists
+        if [ -n "${SSH_KEY_PATH:-}" ]; then
+            cat >> "$config_file" << EOF
+SSH_KEY_PATH="${SSH_KEY_PATH}"
+EOF
+        fi
     fi
 
     log_success "Configuration saved"

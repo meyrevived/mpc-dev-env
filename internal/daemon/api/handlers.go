@@ -681,13 +681,39 @@ func (h *Handlers) GitSyncHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// DeploySecretsRequest represents the JSON request body for POST /api/deploy/secrets.
+type DeploySecretsRequest struct {
+	AWSAccessKeyID     string `json:"aws_access_key_id"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key"`
+	SSHKeyPath         string `json:"ssh_key_path"`
+}
+
 // DeploySecretsHandler handles POST /api/deploy/secrets requests.
 // It triggers the deployment of AWS secrets to the Kubernetes cluster asynchronously
-// and returns 202 Accepted immediately.
+// and returns 202 Accepted immediately. The request body should contain AWS credentials.
 func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) {
 	// Only accept POST requests
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var req DeploySecretsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required credentials
+	if req.AWSAccessKeyID == "" || req.AWSSecretAccessKey == "" {
+		http.Error(w, "aws_access_key_id and aws_secret_access_key are required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate SSH key path
+	if req.SSHKeyPath == "" {
+		http.Error(w, "ssh_key_path is required", http.StatusBadRequest)
 		return
 	}
 
@@ -703,15 +729,29 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
+		// Set environment variables from request credentials
+		_ = os.Setenv("AWS_ACCESS_KEY_ID", req.AWSAccessKeyID)
+		_ = os.Setenv("AWS_SECRET_ACCESS_KEY", req.AWSSecretAccessKey)
+		_ = os.Setenv("SSH_KEY_PATH", req.SSHKeyPath)
+
 		// Create deployment manager and apply secrets
 		deployManager := deploy.NewManager(h.Config)
 		if err := deployManager.ApplySecrets(ctx); err != nil {
 			log.Printf("ERROR: Secrets deployment failed: %v", err)
 			h.StateManager.SetOperationStatus("idle", err)
+			// Clear environment variables on failure
+			_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
+			_ = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+			_ = os.Unsetenv("SSH_KEY_PATH")
 			return
 		}
 
 		log.Println("AWS secrets deployment completed successfully")
+
+		// Clear environment variables after successful deployment for security
+		_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
+		_ = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		_ = os.Unsetenv("SSH_KEY_PATH")
 
 		// Set operation status back to idle (no error)
 		h.StateManager.SetOperationStatus("idle", nil)
