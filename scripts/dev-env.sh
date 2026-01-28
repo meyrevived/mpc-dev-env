@@ -267,6 +267,7 @@ prompt_for_aws_credentials() {
 
     # Collect credentials
     echo ""
+    log_info "[DEBUG] Prompting user for AWS credentials"
     local aws_access_key_id
     prompt_user "Enter AWS Access Key ID" aws_access_key_id
 
@@ -277,22 +278,35 @@ prompt_for_aws_credentials() {
     local aws_region
     prompt_user "Enter AWS Region" aws_region "us-east-1"
 
+    # DEBUG: Log what was collected (sanitized)
+    log_info "[DEBUG] Credentials collected from user input"
+    log_info "[DEBUG] AWS_ACCESS_KEY_ID length: ${#aws_access_key_id} chars"
+    log_info "[DEBUG] AWS_SECRET_ACCESS_KEY length: ${#aws_secret_access_key} chars"
+    log_info "[DEBUG] AWS_REGION: $aws_region"
+
     # Export for validation
     export AWS_ACCESS_KEY_ID="$aws_access_key_id"
     export AWS_SECRET_ACCESS_KEY="$aws_secret_access_key"
     export AWS_REGION="$aws_region"
 
+    log_info "[DEBUG] Credentials exported to environment variables"
+
     echo ""
 
     # Validate credentials (with retry logic)
+    log_info "[DEBUG] Starting credential validation"
     if ! validate_aws_credentials; then
         # Validation failed after retries, show menu again
+        log_info "[DEBUG] Credential validation failed, returning to prompt"
         return 1
     fi
+
+    log_info "[DEBUG] Credential validation succeeded"
 
     # Ask about persistence
     echo ""
     log_info "Credential setup complete."
+    log_info "[DEBUG] Prompting user about credential persistence"
     echo ""
     log_info "Do you want to save these credentials for future sessions?"
     log_info "  1) Yes - save to .env.local (skip credential prompts in future)"
@@ -302,23 +316,30 @@ prompt_for_aws_credentials() {
     local persist_choice
     persist_choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
 
+    log_info "[DEBUG] User persistence choice: $persist_choice"
+
     case "$persist_choice" in
         1)
             export AWS_CREDENTIAL_AUTO_USE=true
+            log_info "[DEBUG] Saving credentials to .env.local"
             save_config
             log_success "Credentials saved to .env.local"
+            log_info "[DEBUG] AWS_CREDENTIAL_AUTO_USE set to true"
             ;;
         2)
             export AWS_CREDENTIAL_AUTO_USE=false
             log_info "Using credentials for this session only"
+            log_info "[DEBUG] AWS_CREDENTIAL_AUTO_USE set to false (session only)"
             ;;
         *)
             log_error "Invalid choice, using credentials for session only"
             export AWS_CREDENTIAL_AUTO_USE=false
+            log_info "[DEBUG] Invalid choice, AWS_CREDENTIAL_AUTO_USE set to false"
             ;;
     esac
 
     echo ""
+    log_info "[DEBUG] Credential prompt complete, returning success"
     return 0
 }
 
@@ -549,6 +570,136 @@ phase3_cluster_setup() {
     done
 }
 
+phase3_5_aws_secrets_deployment() {
+    log INFO "========================================="
+    log INFO "Phase 3.5: AWS Secrets Deployment"
+    log INFO "========================================="
+    log INFO "Deploying AWS credentials early to allow controller cache sync time"
+    echo ""
+
+    # Check if secrets already exist (skip if already deployed)
+    if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
+       kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+        log_success "AWS secrets already deployed, skipping..."
+        return 0
+    fi
+
+    # Credential validation loop
+    local credentials_valid=false
+    while [ "$credentials_valid" = false ]; do
+        # Check if saved credentials exist
+        if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            log_info "Found saved AWS credentials, validating..."
+
+            # Validate saved credentials
+            if validate_aws_credentials; then
+                log_success "Using saved credentials"
+                credentials_valid=true
+                break
+            else
+                log_warning "Saved credentials are invalid"
+            fi
+        fi
+
+        # Prompt for credentials
+        if ! prompt_for_aws_credentials; then
+            # User cancelled
+            echo ""
+            log_info "Do you want to:"
+            echo "[1] Try entering credentials again"
+            echo "[2] Skip AWS secrets (you can deploy them later in Phase 6)"
+            echo ""
+            local retry_choice
+            retry_choice=$(read_choice "Your choice: " "2" "1 2")
+
+            if [ "$retry_choice" = "2" ]; then
+                log_info "Skipping AWS secrets deployment - will prompt again in Phase 6 if needed"
+                return 0
+            fi
+            # Otherwise loop continues and prompts again
+        else
+            # Credentials validated successfully
+            credentials_valid=true
+        fi
+    done
+
+    # Credentials are now validated, collect SSH key
+    echo ""
+    local ssh_key_path
+    local default_ssh_key="${HOME}/.ssh/id_rsa"
+
+    # Check if SSH key is already configured and valid
+    if [ -n "${SSH_KEY_PATH:-}" ] && file_exists "$SSH_KEY_PATH"; then
+        log_info "Using saved SSH key: $SSH_KEY_PATH"
+        ssh_key_path="$SSH_KEY_PATH"
+    else
+        # Prompt for SSH key path
+        prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
+
+        # Validate SSH key exists
+        if ! file_exists "$ssh_key_path"; then
+            log_error "SSH key file does not exist: $ssh_key_path"
+            log_info "Skipping AWS secrets - will prompt again in Phase 6 if needed"
+            return 0
+        fi
+        log_success "SSH key verified: $ssh_key_path"
+    fi
+
+    export SSH_KEY_PATH="$ssh_key_path"
+
+    # Save SSH key path if credentials were saved
+    if [ "${AWS_CREDENTIAL_AUTO_USE:-false}" = "true" ]; then
+        save_config
+        log_info "SSH key path saved to .env.local"
+    fi
+
+    # Deploy secrets via daemon API
+    log_info "Deploying AWS secrets to cluster..."
+
+    # Create JSON payload with credentials
+    local credentials_json
+    credentials_json=$(jq -n \
+        --arg access_key "$AWS_ACCESS_KEY_ID" \
+        --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
+        --arg ssh_key "$ssh_key_path" \
+        '{
+            aws_access_key_id: $access_key,
+            aws_secret_access_key: $secret_key,
+            ssh_key_path: $ssh_key
+        }')
+
+    local response
+    response=$(api_call POST "/api/deploy/secrets" "$credentials_json")
+
+    if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+        log_error "Failed to deploy AWS secrets"
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
+        log_error "Error: $error_msg"
+        log_info "Skipping - will retry in Phase 6 if needed"
+        return 0
+    fi
+
+    # Just wait for secrets to exist, no cache verification (that takes too long)
+    log_info "Waiting for secrets to be created in Kubernetes..."
+
+    local max_wait=30
+    local elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
+           kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+            log_success "✓ AWS secrets deployed successfully"
+            log_info "Controller cache will sync secrets in background during MPC deployment"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    log_warning "Secrets deployment taking longer than expected, continuing anyway..."
+    log_info "Will verify again in Phase 6 if needed"
+}
+
 phase4_minimal_stack_deployment() {
     log INFO "========================================="
     log INFO "Phase 4: MPC Stack Deployment"
@@ -713,6 +864,10 @@ phase5_mpc_deployment() {
         log SUCCESS "MPC and OTP server deployed successfully"
     done
 
+    # Start streaming controller logs to file (background process)
+    log INFO "Starting controller log streaming..."
+    start_controller_log_stream
+
     # Prompt to continue to TaskRun
     echo ""
     if ! prompt_yes_no "MPC deployed successfully. Continue to TaskRun?"; then
@@ -856,8 +1011,17 @@ phase6_taskrun_workflow() {
                     # AWS platform - need credentials with retry logic
                     log_info "AWS platform detected: $platform"
 
-                    # Credential validation loop
-                    local credentials_valid=false
+                    # Check if AWS secrets already deployed (from Phase 3.5)
+                    if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
+                       kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+                        log_success "AWS secrets already deployed in Phase 3.5, skipping credential collection"
+                        # Secrets exist, fall through to TaskRun deployment
+                    else
+                        # Secrets not found, collect credentials now
+                        log_info "AWS secrets not found, collecting credentials now..."
+
+                        # Credential validation loop
+                        local credentials_valid=false
                     while [ "$credentials_valid" = false ]; do
                         # Check if saved credentials exist
                         if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
@@ -898,16 +1062,24 @@ phase6_taskrun_workflow() {
                     echo ""
                     local ssh_key_path
                     local default_ssh_key="${HOME}/.ssh/id_rsa"
-                    prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
 
-                    # Validate SSH key exists
-                    if ! file_exists "$ssh_key_path"; then
-                        log_error "SSH key file does not exist: $ssh_key_path"
-                        echo ""
-                        sleep 2
-                        continue  # Return to menu
+                    # Check if SSH key is already configured and valid
+                    if [ -n "${SSH_KEY_PATH:-}" ] && file_exists "$SSH_KEY_PATH"; then
+                        log_info "Using saved SSH key: $SSH_KEY_PATH"
+                        ssh_key_path="$SSH_KEY_PATH"
+                    else
+                        # Prompt for SSH key path
+                        prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
+
+                        # Validate SSH key exists
+                        if ! file_exists "$ssh_key_path"; then
+                            log_error "SSH key file does not exist: $ssh_key_path"
+                            echo ""
+                            sleep 2
+                            continue  # Return to menu
+                        fi
+                        log_success "SSH key verified: $ssh_key_path"
                     fi
-                    log_success "SSH key verified: $ssh_key_path"
 
                     export SSH_KEY_PATH="$ssh_key_path"
 
@@ -946,15 +1118,27 @@ phase6_taskrun_workflow() {
                         continue  # Return to menu
                     fi
 
-                    # Wait for secrets to be deployed
+                    # Wait for secrets to be deployed AND controller cache to sync
                     log_info "Waiting for secrets deployment to complete..."
-                    local max_wait=60
-                    local elapsed=0
-                    local check_interval=2
-                    sleep 5
 
-                    local secrets_ready=false
-                    while [ $elapsed -lt $max_wait ]; do
+                    # Configuration for fast-then-slow retry strategy
+                    local fast_retry_count=5         # First 5 attempts are fast
+                    local fast_retry_interval=2      # Every 2 seconds (total: 10 seconds)
+                    local slow_retry_interval=30     # Then every 30 seconds for cache sync
+
+                    # Allow override via environment variable (default: 300 seconds = 5 minutes)
+                    local total_timeout=${SECRET_WAIT_TIMEOUT:-300}
+
+                    local elapsed=0
+                    local attempt=0
+                    local secrets_exist=false
+                    local cache_sync_complete=false
+
+                    # Phase 1: Fast retries to confirm secrets exist in Kubernetes
+                    log_info "Phase 1: Checking if secrets exist in Kubernetes..."
+                    while [ $attempt -lt $fast_retry_count ]; do
+                        attempt=$((attempt + 1))
+
                         # Check for daemon errors
                         local daemon_response
                         daemon_response=$(daemon_get_status)
@@ -968,25 +1152,103 @@ phase6_taskrun_workflow() {
                             continue 2  # Return to main menu
                         fi
 
+                        # Check if secrets exist
                         if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
                            kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-                            secrets_ready=true
+                            secrets_exist=true
+                            log_success "✓ Secrets exist in Kubernetes (attempt $attempt)"
                             break
                         fi
-                        log_info "Waiting for secrets... ($elapsed/$max_wait seconds)"
-                        sleep $check_interval
-                        elapsed=$((elapsed + check_interval))
+
+                        log_info "Attempt $attempt/$fast_retry_count: Secrets not visible yet..."
+                        sleep $fast_retry_interval
+                        elapsed=$((elapsed + fast_retry_interval))
                     done
 
-                    if [ "$secrets_ready" = false ]; then
-                        log_error "Timeout waiting for secrets deployment"
+                    if [ "$secrets_exist" = false ]; then
+                        log_error "Timeout: Secrets did not appear in Kubernetes after $((fast_retry_count * fast_retry_interval)) seconds"
                         echo ""
                         log_info "Returning to TaskRun menu..."
                         sleep 2
                         continue  # Return to menu
                     fi
 
-                    log_success "AWS secrets deployed successfully"
+                    # Phase 2: Wait for controller pod to sync secrets into cache
+                    # The controller's Kubernetes client cache needs time to sync the new secrets
+                    # We'll wait up to 5 minutes, checking every 30 seconds
+                    echo ""
+                    log_info "Phase 2: Waiting for controller pod to sync secrets into cache..."
+                    log_info "This can take 1-3 minutes for Kubernetes client-go informers to sync"
+                    log_info "Note: Secrets may be briefly unavailable if daemon is replacing them"
+
+                    local controller_can_access=false
+                    local verification_attempts=0
+
+                    while [ $elapsed -lt $total_timeout ]; do
+                        verification_attempts=$((verification_attempts + 1))
+
+                        # Check for daemon errors
+                        local daemon_response
+                        daemon_response=$(daemon_get_status)
+                        local last_error
+                        last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
+                        if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
+                            log_error "Daemon reported error: $last_error"
+                            echo ""
+                            log_info "Returning to TaskRun menu..."
+                            sleep 2
+                            continue 2  # Return to main menu
+                        fi
+
+                        # Verify secrets exist in Kubernetes
+                        if ! kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 || \
+                           ! kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+                            log_info "Attempt $verification_attempts: Secrets temporarily unavailable (daemon may be replacing them)..."
+                            sleep $slow_retry_interval
+                            elapsed=$((elapsed + slow_retry_interval))
+                            continue
+                        fi
+
+                        # Verify controller pod can actually ACCESS the secrets
+                        log_info "Attempt $verification_attempts: Verifying controller pod can access secrets..."
+
+                        # Get controller pod name
+                        local controller_pod
+                        controller_pod=$(kubectl get pods -n multi-platform-controller -l app=multi-platform-controller -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+                        if [ -z "$controller_pod" ]; then
+                            log_info "Controller pod not found, waiting..."
+                            sleep $slow_retry_interval
+                            elapsed=$((elapsed + slow_retry_interval))
+                            continue
+                        fi
+
+                        # Check if controller pod can read the aws-account secret
+                        if kubectl exec -n multi-platform-controller "$controller_pod" -- \
+                           sh -c 'kubectl get secret aws-account -n multi-platform-controller -o jsonpath="{.data.access-key-id}" > /dev/null 2>&1' 2>/dev/null; then
+                            log_success "✓ Controller pod can access aws-account secret!"
+                            controller_can_access=true
+                            break
+                        else
+                            log_info "Controller cache not synced yet (elapsed: ${elapsed}s / ${total_timeout}s)"
+                            sleep $slow_retry_interval
+                            elapsed=$((elapsed + slow_retry_interval))
+                        fi
+                    done
+
+                    if [ "$controller_can_access" = false ]; then
+                        log_error "Timeout: Controller pod cannot access secrets after ${elapsed}s"
+                        log_error "The controller's client-go cache has not synced the secrets"
+                        echo ""
+                        log_info "Returning to TaskRun menu..."
+                        sleep 2
+                        continue  # Return to menu
+                    fi
+
+                        echo ""
+                        log_success "✓ AWS secrets deployed and controller cache verified"
+                        log_info "Controller can now access AWS credentials for host allocation"
+                    fi  # End of else block (secrets not found)
                     ;;
             esac
         fi
@@ -1054,6 +1316,16 @@ phase7_monitoring() {
     local log_file
     log_file=$(echo "$taskrun_info" | jq -r '.log_file // ""')
 
+    # Verify actual success by checking logs for errors
+    # Tekton may report "Succeeded" even if MPC host allocation failed
+    if [ "$taskrun_status" = "Succeeded" ] && [ -f "$log_file" ]; then
+        # Check for common MPC allocation errors in the log
+        if grep -qi "Error allocating host\|failed to retrieve EC2 instances\|Secret.*not found\|failed to refresh cached credentials" "$log_file"; then
+            log_info "Tekton reported 'Succeeded' but log contains allocation errors - overriding status"
+            taskrun_status="Failed"
+        fi
+    fi
+
     # Display results
     echo ""
     echo "========================================"
@@ -1120,6 +1392,44 @@ phase7_monitoring() {
             fi
             ;;
     esac
+}
+
+# Stream controller logs to file in background
+start_controller_log_stream() {
+    local log_file="$MPC_DEV_ENV_PATH/logs/mpc_log.log"
+    local pid_file="$MPC_DEV_ENV_PATH/logs/.controller_log_stream.pid"
+
+    # Kill any existing log stream process
+    if [ -f "$pid_file" ]; then
+        local old_pid
+        old_pid=$(cat "$pid_file")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            log_info "Stopping previous controller log stream (PID: $old_pid)"
+            kill "$old_pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file"
+    fi
+
+    # Start new log stream in background
+    (
+        # Wait for controller pod to be ready
+        local max_wait=60
+        local elapsed=0
+        while [ $elapsed -lt $max_wait ]; do
+            if kubectl get pods -n multi-platform-controller -l app=multi-platform-controller -o jsonpath='{.items[0].metadata.name}' &>/dev/null; then
+                break
+            fi
+            sleep 2
+            elapsed=$((elapsed + 2))
+        done
+
+        # Stream logs, automatically following pod restarts
+        kubectl logs -f -n multi-platform-controller deployment/multi-platform-controller --all-containers=true > "$log_file" 2>&1
+    ) &
+
+    local stream_pid=$!
+    echo $stream_pid > "$pid_file"
+    log_success "Controller logs streaming to: $log_file (PID: $stream_pid)"
 }
 
 # Helper function to rebuild MPC
@@ -1224,6 +1534,26 @@ phase8_summary() {
 }
 
 # Setup signal handlers for graceful shutdown
+cleanup_level_6() {
+    echo ""
+    log_info "Cleaning up and exiting..."
+
+    # Stop controller log stream
+    local pid_file="$MPC_DEV_ENV_PATH/logs/.controller_log_stream.pid"
+    if [ -f "$pid_file" ]; then
+        local stream_pid
+        stream_pid=$(cat "$pid_file")
+        if kill -0 "$stream_pid" 2>/dev/null; then
+            log_info "Stopping controller log stream (PID: $stream_pid)"
+            kill "$stream_pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file"
+    fi
+
+    log_info "Goodbye!"
+    exit 0
+}
+
 setup_signal_handlers() {
     # Trap SIGINT (Ctrl+C) and SIGTERM
     trap 'cleanup_level_6' INT TERM
@@ -1244,6 +1574,7 @@ main() {
     phase1_prerequisites
     phase2_daemon_startup
     phase3_cluster_setup
+    phase3_5_aws_secrets_deployment  # Deploy AWS secrets early for cache sync time
     phase4_minimal_stack_deployment
     phase5_mpc_deployment
     phase6_taskrun_workflow

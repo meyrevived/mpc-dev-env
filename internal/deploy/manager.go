@@ -35,6 +35,14 @@ const (
 	deploymentWaitRetry = 60 // 2 minutes with 2 second intervals
 )
 
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // Manager handles deployment operations for the multi-platform-controller.
 //
 // It uses kubectl commands to interact with the Kubernetes cluster and maintains
@@ -160,7 +168,7 @@ data:
   dynamic.linux-arm64.ami: "ami-03d8261904652a19c"
   dynamic.linux-arm64.instance-type: "m6g.large"
   dynamic.linux-arm64.instance-tag: "dev-arm64"
-  dynamic.linux-arm64.key-name: "mpc-dev-key"
+  dynamic.linux-arm64.key-name: "mpc-dev-env-us"
   dynamic.linux-arm64.aws-secret: "aws-account"
   dynamic.linux-arm64.ssh-secret: "aws-ssh-key"
   dynamic.linux-arm64.security-group-id: "sg-default"
@@ -174,7 +182,7 @@ data:
   dynamic.linux-mlarge-arm64.ami: "ami-03d8261904652a19c"
   dynamic.linux-mlarge-arm64.instance-type: "m6g.large"
   dynamic.linux-mlarge-arm64.instance-tag: "dev-arm64-mlarge"
-  dynamic.linux-mlarge-arm64.key-name: "mpc-dev-key"
+  dynamic.linux-mlarge-arm64.key-name: "mpc-dev-env-us"
   dynamic.linux-mlarge-arm64.aws-secret: "aws-account"
   dynamic.linux-mlarge-arm64.ssh-secret: "aws-ssh-key"
   dynamic.linux-mlarge-arm64.security-group-id: "sg-default"
@@ -188,7 +196,7 @@ data:
   dynamic.linux-amd64.ami: "ami-0c02fb55b1a47c3c8"
   dynamic.linux-amd64.instance-type: "m6a.large"
   dynamic.linux-amd64.instance-tag: "dev-amd64"
-  dynamic.linux-amd64.key-name: "mpc-dev-key"
+  dynamic.linux-amd64.key-name: "mpc-dev-env-us"
   dynamic.linux-amd64.aws-secret: "aws-account"
   dynamic.linux-amd64.ssh-secret: "aws-ssh-key"
   dynamic.linux-amd64.security-group-id: "sg-default"
@@ -202,7 +210,7 @@ data:
   dynamic.linux-mlarge-amd64.ami: "ami-0c02fb55b1a47c3c8"
   dynamic.linux-mlarge-amd64.instance-type: "m6a.large"
   dynamic.linux-mlarge-amd64.instance-tag: "dev-amd64-mlarge"
-  dynamic.linux-mlarge-amd64.key-name: "mpc-dev-key"
+  dynamic.linux-mlarge-amd64.key-name: "mpc-dev-env-us"
   dynamic.linux-mlarge-amd64.aws-secret: "aws-account"
   dynamic.linux-mlarge-amd64.ssh-secret: "aws-ssh-key"
   dynamic.linux-mlarge-amd64.security-group-id: "sg-default"
@@ -612,21 +620,40 @@ func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
 	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 
+	// DEBUG: Log credential presence (not values!)
+	log.Printf("[DEBUG] AWS_ACCESS_KEY_ID present: %t (length: %d)", awsAccessKeyID != "", len(awsAccessKeyID))
+	log.Printf("[DEBUG] AWS_SECRET_ACCESS_KEY present: %t (length: %d)", awsSecretAccessKey != "", len(awsSecretAccessKey))
+	if awsAccessKeyID != "" {
+		log.Printf("[DEBUG] AWS_ACCESS_KEY_ID prefix: %s***", awsAccessKeyID[:min(4, len(awsAccessKeyID))])
+	}
+
 	if awsAccessKeyID == "" || awsSecretAccessKey == "" {
 		return errors.New("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables must be set")
 	}
 
 	// Check if secret already exists
+	log.Printf("[DEBUG] Checking if secret 'aws-account' exists in namespace '%s'", mpcNamespace)
 	checkCmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "aws-account", "-n", mpcNamespace)
 	if err := checkCmd.Run(); err == nil {
 		log.Println("Secret 'aws-account' already exists, replacing...")
 		deleteCmd := exec.CommandContext(ctx, "kubectl", "delete", "secret", "aws-account", "-n", mpcNamespace)
 		if err := deleteCmd.Run(); err != nil {
 			log.Printf("WARNING: Failed to delete existing secret: %v", err)
+		} else {
+			log.Println("[DEBUG] Old secret deleted successfully")
 		}
+	} else {
+		log.Println("[DEBUG] Secret does not exist yet, creating new")
 	}
 
-	// Create the secret
+	// Create the secret with the required label for controller cache
+	// The label build.appstudio.redhat.com/multi-platform-secret is required for the
+	// controller's informer cache to include this secret (see controller/controller.go:73-77)
+	log.Printf("[DEBUG] Creating secret 'aws-account' with access-key-id and secret-access-key fields")
+	log.Printf("[DEBUG] Target namespace: %s", mpcNamespace)
+	log.Printf("[DEBUG] Adding label: build.appstudio.redhat.com/multi-platform-secret=true")
+
+	// First create the secret
 	createCmd := exec.CommandContext(ctx, "kubectl", "create", "secret", "generic", "aws-account",
 		"--from-literal=access-key-id="+awsAccessKeyID,
 		"--from-literal=secret-access-key="+awsSecretAccessKey,
@@ -638,7 +665,20 @@ func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
 		return fmt.Errorf("failed to create aws-account secret: %w", err)
 	}
 
+	// Then add the label (kubectl create doesn't support --labels for secrets)
+	labelCmd := exec.CommandContext(ctx, "kubectl", "label", "secret", "aws-account",
+		"build.appstudio.redhat.com/multi-platform-secret=true",
+		"-n", mpcNamespace)
+	labelCmd.Stdout = os.Stdout
+	labelCmd.Stderr = os.Stderr
+
+	if err := labelCmd.Run(); err != nil {
+		return fmt.Errorf("failed to label aws-account secret: %w", err)
+	}
+
 	log.Println("aws-account secret created successfully")
+	log.Printf("[DEBUG] Label added to ensure secret is cached by controller")
+	log.Printf("[DEBUG] Timestamp of secret creation: %s", time.Now().Format(time.RFC3339))
 	return nil
 }
 
@@ -648,16 +688,20 @@ func (m *Manager) createAWSSSHKeySecret(ctx context.Context) error {
 
 	// Get SSH key path from environment
 	sshKeyPath := os.Getenv("SSH_KEY_PATH")
+	log.Printf("[DEBUG] SSH_KEY_PATH from environment: %s", sshKeyPath)
+
 	if sshKeyPath == "" {
 		return errors.New("SSH_KEY_PATH environment variable must be set")
 	}
 
 	// Validate that the SSH key file exists
-	if _, err := os.Stat(sshKeyPath); err != nil {
+	if stat, err := os.Stat(sshKeyPath); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("SSH key file not found: %s", sshKeyPath)
 		}
 		return fmt.Errorf("cannot access SSH key file: %w", err)
+	} else {
+		log.Printf("[DEBUG] SSH key file exists, size: %d bytes, mode: %s", stat.Size(), stat.Mode())
 	}
 
 	// Check if secret already exists
@@ -671,6 +715,7 @@ func (m *Manager) createAWSSSHKeySecret(ctx context.Context) error {
 	}
 
 	// Create the secret
+	log.Printf("[DEBUG] Adding label: build.appstudio.redhat.com/multi-platform-secret=true")
 	createCmd := exec.CommandContext(ctx, "kubectl", "create", "secret", "generic", "aws-ssh-key",
 		"--from-file=id_rsa="+sshKeyPath,
 		"--namespace", mpcNamespace)
@@ -681,25 +726,47 @@ func (m *Manager) createAWSSSHKeySecret(ctx context.Context) error {
 		return fmt.Errorf("failed to create aws-ssh-key secret: %w", err)
 	}
 
+	// Add the label so the controller cache will include this secret
+	labelCmd := exec.CommandContext(ctx, "kubectl", "label", "secret", "aws-ssh-key",
+		"build.appstudio.redhat.com/multi-platform-secret=true",
+		"-n", mpcNamespace)
+	labelCmd.Stdout = os.Stdout
+	labelCmd.Stderr = os.Stderr
+
+	if err := labelCmd.Run(); err != nil {
+		return fmt.Errorf("failed to label aws-ssh-key secret: %w", err)
+	}
+
 	log.Println("aws-ssh-key secret created successfully")
+	log.Printf("[DEBUG] Label added to ensure secret is cached by controller")
 	return nil
 }
 
 // verifySecrets verifies that all required secrets exist
 func (m *Manager) verifySecrets(ctx context.Context) error {
 	log.Println("Verifying secrets...")
+	log.Printf("[DEBUG] Verification timestamp: %s", time.Now().Format(time.RFC3339))
 
 	requiredSecrets := []string{"aws-account", "aws-ssh-key"}
 
 	for _, secretName := range requiredSecrets {
+		log.Printf("[DEBUG] Checking secret '%s' in namespace '%s'", secretName, mpcNamespace)
 		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", secretName, "-n", mpcNamespace)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("secret '%s' not found in namespace %s", secretName, mpcNamespace)
 		}
 		log.Printf("✓ Secret exists: %s", secretName)
+
+		// DEBUG: Get detailed secret info
+		detailsCmd := exec.CommandContext(ctx, "kubectl", "get", "secret", secretName, "-n", mpcNamespace, "-o", "yaml")
+		if output, err := detailsCmd.CombinedOutput(); err == nil {
+			log.Printf("[DEBUG] Secret '%s' YAML output length: %d bytes", secretName, len(output))
+			// Don't log the full YAML as it contains sensitive data
+		}
 	}
 
 	log.Println("All required secrets exist")
+	log.Printf("[DEBUG] Secret verification complete at: %s", time.Now().Format(time.RFC3339))
 	return nil
 }
 
