@@ -217,6 +217,7 @@ load_config() {
 
     if [ -f "$config_file" ]; then
         log_info "Loading configuration from: $config_file"
+        log_info "[DEBUG] Config file size: $(wc -c < "$config_file") bytes"
         # Source the file but only set variables that aren't already set
         while IFS='=' read -r key value || [ -n "$key" ]; do
             # Skip empty lines and comments
@@ -228,8 +229,18 @@ load_config() {
             if [ -z "${!key:-}" ]; then
                 export "$key"="$value"
                 log_info "  Loaded $key from config"
+                # DEBUG: Show partial value for AWS credentials (without exposing full value)
+                if [ "$key" = "AWS_ACCESS_KEY_ID" ]; then
+                    log_info "  [DEBUG] AWS_ACCESS_KEY_ID length: ${#value} chars, prefix: ${value:0:4}***"
+                elif [ "$key" = "AWS_SECRET_ACCESS_KEY" ]; then
+                    log_info "  [DEBUG] AWS_SECRET_ACCESS_KEY length: ${#value} chars"
+                elif [ "$key" = "SSH_KEY_PATH" ]; then
+                    log_info "  [DEBUG] SSH_KEY_PATH file exists: $([ -f "$value" ] && echo "yes" || echo "no")"
+                fi
             fi
         done < "$config_file"
+    else
+        log_info "[DEBUG] Config file does not exist: $config_file"
     fi
 }
 
@@ -441,26 +452,47 @@ validate_aws_credentials() {
     local wait_seconds=120  # 2 minutes
     local attempt=1
 
+    # DEBUG: Log credentials being validated (sanitized)
+    log_info "[DEBUG] Starting AWS credential validation"
+    log_info "[DEBUG] AWS_ACCESS_KEY_ID set: $([ -n "${AWS_ACCESS_KEY_ID:-}" ] && echo "yes" || echo "no")"
+    log_info "[DEBUG] AWS_SECRET_ACCESS_KEY set: $([ -n "${AWS_SECRET_ACCESS_KEY:-}" ] && echo "yes" || echo "no")"
+    log_info "[DEBUG] AWS_REGION: ${AWS_REGION:-not set}"
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+        log_info "[DEBUG] AWS_ACCESS_KEY_ID length: ${#AWS_ACCESS_KEY_ID} chars, prefix: ${AWS_ACCESS_KEY_ID:0:4}***"
+    fi
+
     # Check if AWS CLI is installed
     if ! check_aws_cli_installed; then
+        log_info "[DEBUG] AWS CLI not installed, validation cannot proceed"
         return 1
     fi
 
+    log_info "[DEBUG] AWS CLI version: $(aws --version 2>&1 | head -1)"
+
     while [ $attempt -le $max_attempts ]; do
         log_info "Validating credentials..."
+        log_info "[DEBUG] Validation attempt $attempt/$max_attempts at $(date '+%Y-%m-%d %H:%M:%S')"
+        log_info "[DEBUG] Calling: aws sts get-caller-identity"
 
         # Try to call AWS STS and capture output
         local aws_output
         aws_output=$(aws sts get-caller-identity 2>&1)
         local exit_code=$?
 
+        log_info "[DEBUG] AWS STS exit code: $exit_code"
+
         if [ $exit_code -eq 0 ]; then
             log_success "Credentials validated successfully"
+            # DEBUG: Show sanitized identity info
+            log_info "[DEBUG] AWS Identity validated:"
+            echo "$aws_output" | jq -r '.Account' 2>/dev/null && log_info "[DEBUG]   Account: $(echo "$aws_output" | jq -r '.Account')" || true
+            echo "$aws_output" | jq -r '.Arn' 2>/dev/null && log_info "[DEBUG]   ARN: $(echo "$aws_output" | jq -r '.Arn')" || true
             return 0
         fi
 
         # Validation failed
         log_error "Credential validation failed (Attempt $attempt/$max_attempts)"
+        log_info "[DEBUG] Validation failed at $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
         log_error "AWS STS call failed. Possible reasons:"
         log_error "  - Invalid Access Key ID or Secret Access Key"
@@ -471,6 +503,7 @@ validate_aws_credentials() {
         # Show AWS error
         if [ -n "$aws_output" ]; then
             log_error "AWS Error: $aws_output"
+            log_info "[DEBUG] Full error output length: ${#aws_output} characters"
             echo ""
         fi
 

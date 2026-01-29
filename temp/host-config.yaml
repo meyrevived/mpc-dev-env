@@ -22,7 +22,7 @@ data:
   # ARM64 - Basic (m6g.large)
   dynamic.linux-arm64.type: "aws"
   dynamic.linux-arm64.region: "us-east-1"
-  dynamic.linux-arm64.ami: "ami-0feec6843d2edb00c"
+  dynamic.linux-arm64.ami: "ami-06f37afe6d4f43c47"
   dynamic.linux-arm64.instance-type: "m6g.large"
   dynamic.linux-arm64.instance-tag: "dev-arm64"
   dynamic.linux-arm64.key-name: "mpc-dev-env-us"
@@ -36,7 +36,7 @@ data:
   # ARM64 - Medium (m6g.large)
   dynamic.linux-mlarge-arm64.type: "aws"
   dynamic.linux-mlarge-arm64.region: "us-east-1"
-  dynamic.linux-mlarge-arm64.ami: "ami-0feec6843d2edb00c"
+  dynamic.linux-mlarge-arm64.ami: "ami-06f37afe6d4f43c47"
   dynamic.linux-mlarge-arm64.instance-type: "m6g.large"
   dynamic.linux-mlarge-arm64.instance-tag: "dev-arm64-mlarge"
   dynamic.linux-mlarge-arm64.key-name: "mpc-dev-env-us"
@@ -50,7 +50,7 @@ data:
   # AMD64 - Basic (m6a.large)
   dynamic.linux-amd64.type: "aws"
   dynamic.linux-amd64.region: "us-east-1"
-  dynamic.linux-amd64.ami: "ami-0feec6843d2edb00c"
+  dynamic.linux-amd64.ami: "ami-01aaf1c29c7e0f0af"
   dynamic.linux-amd64.instance-type: "m6a.large"
   dynamic.linux-amd64.instance-tag: "dev-amd64"
   dynamic.linux-amd64.key-name: "mpc-dev-env-us"
