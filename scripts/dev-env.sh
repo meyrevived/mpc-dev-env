@@ -194,152 +194,45 @@ check_local_platform_compatible() {
     return 0
 }
 
-# prompt_for_aws_credentials - Interactive menu for AWS credential collection
+# prompt_for_aws_profile - Prompt user for AWS SSO profile name
 #
-# Shows adaptive menu based on whether saved credentials exist.
-# Handles credential input, validation, and persistence preferences.
+# Prompts user to enter their AWS SSO profile name and saves it
+# to .env.local for future sessions.
 #
 # Side effects:
-#   - Sets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION env vars
-#   - Sets AWS_CREDENTIAL_AUTO_USE if user chooses to save
-#   - May call save_config to persist credentials
+#   - Sets AWS_PROFILE env var
+#   - Calls save_config to persist profile name
 #
 # Returns:
-#   0 if credentials collected successfully
-#   1 if user chose to skip or validation failed
-prompt_for_aws_credentials() {
+#   0 if profile collected and validated successfully
+#   1 if user cancelled
+prompt_for_aws_profile() {
     echo ""
-    log_info "AWS credentials needed for this TaskRun."
-    echo ""
-
-    # Check if saved credentials exist
-    local has_saved_creds=false
-    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-        has_saved_creds=true
-    fi
-
-    # Show adaptive menu
-    if [ "$has_saved_creds" = true ]; then
-        # Saved credentials exist (but may be invalid if we got here)
-        log_info "Saved credentials are invalid or expired."
-        echo ""
-        log_info "How do you want to provide AWS credentials?"
-        log_info "  1) Enter new credentials manually"
-        log_info "  2) Skip this TaskRun (return to TaskRun selection)"
-        echo ""
-
-        local choice
-        choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
-
-        case "$choice" in
-            1) ;;  # Continue to credential input
-            2)
-                log_info "Skipping TaskRun"
-                return 1
-                ;;
-            *)
-                log_error "Invalid choice"
-                return 1
-                ;;
-        esac
-    else
-        # No saved credentials
-        log_info "How do you want to provide AWS credentials?"
-        log_info "  1) Enter credentials manually (AWS Access Key + Secret Key)"
-        log_info "  2) Skip this TaskRun (return to TaskRun selection)"
-        echo ""
-
-        local choice
-        choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
-
-        case "$choice" in
-            1) ;;  # Continue to credential input
-            2)
-                log_info "Skipping TaskRun"
-                return 1
-                ;;
-            *)
-                log_error "Invalid choice"
-                return 1
-                ;;
-        esac
-    fi
-
-    # Collect credentials
-    echo ""
-    log_info "[DEBUG] Prompting user for AWS credentials"
-    local aws_access_key_id
-    prompt_user "Enter AWS Access Key ID" aws_access_key_id
-
-    local aws_secret_access_key
-    read -r -s -p "Enter AWS Secret Access Key: " aws_secret_access_key
-    echo  # Print newline after hidden input
-
-    local aws_region
-    prompt_user "Enter AWS Region" aws_region "us-east-1"
-
-    # DEBUG: Log what was collected (sanitized)
-    log_info "[DEBUG] Credentials collected from user input"
-    log_info "[DEBUG] AWS_ACCESS_KEY_ID length: ${#aws_access_key_id} chars"
-    log_info "[DEBUG] AWS_SECRET_ACCESS_KEY length: ${#aws_secret_access_key} chars"
-    log_info "[DEBUG] AWS_REGION: $aws_region"
-
-    # Export for validation
-    export AWS_ACCESS_KEY_ID="$aws_access_key_id"
-    export AWS_SECRET_ACCESS_KEY="$aws_secret_access_key"
-    export AWS_REGION="$aws_region"
-
-    log_info "[DEBUG] Credentials exported to environment variables"
-
+    log_info "AWS SSO profile needed for this TaskRun."
     echo ""
 
-    # Validate credentials (with retry logic)
-    log_info "[DEBUG] Starting credential validation"
-    if ! validate_aws_credentials; then
-        # Validation failed after retries, show menu again
-        log_info "[DEBUG] Credential validation failed, returning to prompt"
+    local aws_profile
+    prompt_user "Enter your AWS SSO profile name" aws_profile
+
+    if [ -z "$aws_profile" ]; then
+        log_error "Profile name cannot be empty"
         return 1
     fi
 
-    log_info "[DEBUG] Credential validation succeeded"
+    export AWS_PROFILE="$aws_profile"
 
-    # Ask about persistence
-    echo ""
-    log_info "Credential setup complete."
-    log_info "[DEBUG] Prompting user about credential persistence"
-    echo ""
-    log_info "Do you want to save these credentials for future sessions?"
-    log_info "  1) Yes - save to .env.local (skip credential prompts in future)"
-    log_info "  2) No - use for this session only (ask again next time)"
-    echo ""
+    # Validate the SSO session
+    if ! validate_sso_session "$aws_profile"; then
+        # Session invalid - enter recovery loop
+        if ! sso_recovery_loop "$aws_profile"; then
+            return 1
+        fi
+    fi
 
-    local persist_choice
-    persist_choice=$(read_choice "Enter choice [1-2]: " "1" "1 2")
+    # Save profile to .env.local
+    save_config
+    log_success "AWS profile '$aws_profile' saved to .env.local"
 
-    log_info "[DEBUG] User persistence choice: $persist_choice"
-
-    case "$persist_choice" in
-        1)
-            export AWS_CREDENTIAL_AUTO_USE=true
-            log_info "[DEBUG] Saving credentials to .env.local"
-            save_config
-            log_success "Credentials saved to .env.local"
-            log_info "[DEBUG] AWS_CREDENTIAL_AUTO_USE set to true"
-            ;;
-        2)
-            export AWS_CREDENTIAL_AUTO_USE=false
-            log_info "Using credentials for this session only"
-            log_info "[DEBUG] AWS_CREDENTIAL_AUTO_USE set to false (session only)"
-            ;;
-        *)
-            log_error "Invalid choice, using credentials for session only"
-            export AWS_CREDENTIAL_AUTO_USE=false
-            log_info "[DEBUG] Invalid choice, AWS_CREDENTIAL_AUTO_USE set to false"
-            ;;
-    esac
-
-    echo ""
-    log_info "[DEBUG] Credential prompt complete, returning success"
     return 0
 }
 
@@ -577,53 +470,55 @@ phase3_5_aws_secrets_deployment() {
     log INFO "Deploying AWS credentials early to allow controller cache sync time"
     echo ""
 
-    # Check if secrets already exist (skip if already deployed)
+    # Check if secrets already exist
     if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
        kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-        log_success "AWS secrets already deployed, skipping..."
-        return 0
+        # Check for stale pre-SSO secrets (missing session-token field)
+        if kubectl get secret aws-account -n multi-platform-controller -o jsonpath='{.data.session-token}' 2>/dev/null | grep -q .; then
+            # Secrets exist with session-token — but SSO temp creds expire, so validate the session
+            local profile="${AWS_PROFILE:-default}"
+            if validate_sso_session "$profile" 2>/dev/null; then
+                log_success "AWS secrets deployed and SSO session still valid, skipping..."
+                return 0
+            else
+                log_warning "AWS secrets exist but SSO session has expired"
+                log_info "Deleting secrets to recreate with fresh SSO credentials..."
+                kubectl delete secret aws-account aws-ssh-key -n multi-platform-controller 2>/dev/null || true
+            fi
+        else
+            log_warning "Stale AWS secrets detected (missing session-token field, likely from pre-SSO run)"
+            log_info "Deleting stale secrets to recreate with SSO credentials..."
+            kubectl delete secret aws-account aws-ssh-key -n multi-platform-controller 2>/dev/null || true
+        fi
     fi
 
-    # Credential validation loop
-    local credentials_valid=false
-    while [ "$credentials_valid" = false ]; do
-        # Check if saved credentials exist
-        if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-            log_info "Found saved AWS credentials, validating..."
-
-            # Validate saved credentials
-            if validate_aws_credentials; then
-                log_success "Using saved credentials"
-                credentials_valid=true
-                break
-            else
-                log_warning "Saved credentials are invalid"
-            fi
+    # Check if AWS_PROFILE is set (from .env.local)
+    if [ -z "${AWS_PROFILE:-}" ]; then
+        # No profile saved, prompt for one
+        if ! prompt_for_aws_profile; then
+            echo ""
+            log_info "Skipping AWS secrets deployment - will prompt again in Phase 6 if needed"
+            return 0
         fi
-
-        # Prompt for credentials
-        if ! prompt_for_aws_credentials; then
-            # User cancelled
-            echo ""
-            log_info "Do you want to:"
-            echo "[1] Try entering credentials again"
-            echo "[2] Skip AWS secrets (you can deploy them later in Phase 6)"
-            echo ""
-            local retry_choice
-            retry_choice=$(read_choice "Your choice: " "2" "1 2")
-
-            if [ "$retry_choice" = "2" ]; then
+    else
+        # Profile exists, validate silently
+        if ! validate_sso_session "$AWS_PROFILE"; then
+            # Session expired, enter recovery loop
+            if ! sso_recovery_loop "$AWS_PROFILE"; then
                 log_info "Skipping AWS secrets deployment - will prompt again in Phase 6 if needed"
                 return 0
             fi
-            # Otherwise loop continues and prompts again
-        else
-            # Credentials validated successfully
-            credentials_valid=true
         fi
-    done
+    fi
 
-    # Credentials are now validated, collect SSH key
+    # Extract temporary credentials from SSO session
+    if ! extract_sso_credentials "$AWS_PROFILE"; then
+        log_error "Failed to extract credentials from SSO session"
+        log_info "Skipping - will retry in Phase 6 if needed"
+        return 0
+    fi
+
+    # Collect SSH key
     echo ""
     local ssh_key_path
     local default_ssh_key="${HOME}/.ssh/id_rsa"
@@ -646,25 +541,21 @@ phase3_5_aws_secrets_deployment() {
     fi
 
     export SSH_KEY_PATH="$ssh_key_path"
-
-    # Save SSH key path if credentials were saved
-    if [ "${AWS_CREDENTIAL_AUTO_USE:-false}" = "true" ]; then
-        save_config
-        log_info "SSH key path saved to .env.local"
-    fi
+    save_config
 
     # Deploy secrets via daemon API
     log_info "Deploying AWS secrets to cluster..."
 
-    # Create JSON payload with credentials
     local credentials_json
     credentials_json=$(jq -n \
         --arg access_key "$AWS_ACCESS_KEY_ID" \
         --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
+        --arg session_token "${AWS_SESSION_TOKEN:-}" \
         --arg ssh_key "$ssh_key_path" \
         '{
             aws_access_key_id: $access_key,
             aws_secret_access_key: $secret_key,
+            aws_session_token: $session_token,
             ssh_key_path: $ssh_key
         }')
 
@@ -680,7 +571,7 @@ phase3_5_aws_secrets_deployment() {
         return 0
     fi
 
-    # Just wait for secrets to exist, no cache verification (that takes too long)
+    # Wait for secrets to exist
     log_info "Waiting for secrets to be created in Kubernetes..."
 
     local max_wait=30
@@ -688,8 +579,13 @@ phase3_5_aws_secrets_deployment() {
     while [ $elapsed -lt $max_wait ]; do
         if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
            kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-            log_success "✓ AWS secrets deployed successfully"
+            log_success "AWS secrets deployed successfully"
             log_info "Controller cache will sync secrets in background during MPC deployment"
+
+            # Clear temporary credentials from environment
+            unset AWS_ACCESS_KEY_ID
+            unset AWS_SECRET_ACCESS_KEY
+            unset AWS_SESSION_TOKEN
             return 0
         fi
         sleep 2
@@ -698,6 +594,11 @@ phase3_5_aws_secrets_deployment() {
 
     log_warning "Secrets deployment taking longer than expected, continuing anyway..."
     log_info "Will verify again in Phase 6 if needed"
+
+    # Clear temporary credentials from environment
+    unset AWS_ACCESS_KEY_ID
+    unset AWS_SECRET_ACCESS_KEY
+    unset AWS_SESSION_TOKEN
 }
 
 phase4_minimal_stack_deployment() {
@@ -892,12 +793,13 @@ phase6_taskrun_workflow() {
         echo "TaskRun Menu:"
         echo "[1] Run TaskRun from taskruns/ directory"
         echo "[2] Provide path to TaskRun file"
-        echo "[3] Skip to summary (cluster stays running)"
-        echo "[4] Exit and cleanup (tears down cluster + daemon)"
+        echo "[3] Switch AWS account"
+        echo "[4] Skip to summary (cluster stays running)"
+        echo "[5] Exit and cleanup (tears down cluster + daemon)"
         echo ""
 
         local choice
-        choice=$(read_choice "Your choice: " "3" "1 2 3 4")
+        choice=$(read_choice "Your choice: " "4" "1 2 3 4 5")
 
         local taskrun_file=""
 
@@ -941,11 +843,87 @@ phase6_taskrun_workflow() {
                 ;;
 
             3)
+                # Switch AWS account
+                echo ""
+                log_info "Current AWS profile: ${AWS_PROFILE:-not set}"
+                echo ""
+
+                local new_profile
+                prompt_user "Enter new AWS SSO profile name" new_profile
+
+                if [ -z "$new_profile" ]; then
+                    log_error "Profile name cannot be empty"
+                    sleep 2
+                    continue
+                fi
+
+                export AWS_PROFILE="$new_profile"
+
+                if ! validate_sso_session "$new_profile"; then
+                    if ! sso_recovery_loop "$new_profile"; then
+                        continue
+                    fi
+                fi
+
+                # Extract new credentials and redeploy secrets
+                if ! extract_sso_credentials "$new_profile"; then
+                    log_error "Failed to extract credentials"
+                    sleep 2
+                    continue
+                fi
+
+                save_config
+                log_success "Switched to AWS profile: $new_profile"
+
+                # Redeploy secrets with new credentials
+                local ssh_key_path="${SSH_KEY_PATH:-${HOME}/.ssh/id_rsa}"
+                if [ -z "${SSH_KEY_PATH:-}" ] || ! file_exists "$SSH_KEY_PATH"; then
+                    prompt_user "Enter SSH key path" ssh_key_path "$ssh_key_path"
+                    export SSH_KEY_PATH="$ssh_key_path"
+                    save_config
+                fi
+
+                log_info "Redeploying AWS secrets with new profile..."
+
+                local credentials_json
+                credentials_json=$(jq -n \
+                    --arg access_key "$AWS_ACCESS_KEY_ID" \
+                    --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
+                    --arg session_token "${AWS_SESSION_TOKEN:-}" \
+                    --arg ssh_key "$ssh_key_path" \
+                    '{
+                        aws_access_key_id: $access_key,
+                        aws_secret_access_key: $secret_key,
+                        aws_session_token: $session_token,
+                        ssh_key_path: $ssh_key
+                    }')
+
+                local response
+                response=$(api_call POST "/api/deploy/secrets" "$credentials_json")
+
+                if echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+                    sleep 5  # Give secrets time to deploy
+                    log_success "AWS secrets redeployed with new profile"
+                else
+                    log_error "Failed to redeploy secrets"
+                fi
+
+                # Clear temp credentials
+                unset AWS_ACCESS_KEY_ID
+                unset AWS_SECRET_ACCESS_KEY
+                unset AWS_SESSION_TOKEN
+
+                echo ""
+                sleep 2
+                continue
+                ;;
+
+            4)
                 log INFO "Skipping to summary..."
                 return 0  # Exit loop, continue to phase 8
                 ;;
 
-            4)
+            5)
                 log INFO "Exiting and cleaning up..."
                 cleanup_level_6
                 exit 0
@@ -1008,247 +986,159 @@ phase6_taskrun_workflow() {
                     ;;
 
                 *)
-                    # AWS platform - need credentials with retry logic
+                    # AWS platform - need SSO profile
                     log_info "AWS platform detected: $platform"
 
                     # Check if AWS secrets already deployed (from Phase 3.5)
                     if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
                        kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-                        log_success "AWS secrets already deployed in Phase 3.5, skipping credential collection"
-                        # Secrets exist, fall through to TaskRun deployment
-                    else
-                        # Secrets not found, collect credentials now
-                        log_info "AWS secrets not found, collecting credentials now..."
-
-                        # Credential validation loop
-                        local credentials_valid=false
-                    while [ "$credentials_valid" = false ]; do
-                        # Check if saved credentials exist
-                        if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-                            log_info "Found saved AWS credentials, validating..."
-
-                            # Validate saved credentials
-                            if validate_aws_credentials; then
-                                log_success "Using saved credentials"
-                                credentials_valid=true
-                                break
+                        # Check for stale pre-SSO secrets (missing session-token field)
+                        if kubectl get secret aws-account -n multi-platform-controller -o jsonpath='{.data.session-token}' 2>/dev/null | grep -q .; then
+                            # Secrets exist with session-token — validate SSO session is still active
+                            local sso_profile="${AWS_PROFILE:-default}"
+                            if validate_sso_session "$sso_profile" 2>/dev/null; then
+                                log_success "AWS secrets already deployed and SSO session valid, skipping credential collection"
+                                # Secrets exist and valid, fall through to TaskRun deployment
                             else
-                                log_warning "Saved credentials are invalid"
+                                log_warning "AWS secrets exist but SSO session has expired"
+                                log_info "Deleting secrets to recreate with fresh SSO credentials..."
+                                kubectl delete secret aws-account aws-ssh-key -n multi-platform-controller 2>/dev/null || true
+                                # Fall through to credential collection below
                             fi
-                        fi
-
-                        # Prompt for credentials
-                        if ! prompt_for_aws_credentials; then
-                            # User cancelled
-                            echo ""
-                            log_info "Do you want to:"
-                            echo "[1] Try entering credentials again"
-                            echo "[2] Return to TaskRun menu"
-                            echo ""
-                            local retry_choice
-                            retry_choice=$(read_choice "Your choice: " "2" "1 2")
-
-                            if [ "$retry_choice" = "2" ]; then
-                                continue 2  # Break out to main TaskRun menu
-                            fi
-                            # Otherwise loop continues and prompts again
                         else
-                            # Credentials validated successfully
-                            credentials_valid=true
+                            log_warning "Stale AWS secrets detected (missing session-token field, likely from pre-SSO run)"
+                            log_info "Deleting stale secrets to recreate with SSO credentials..."
+                            kubectl delete secret aws-account aws-ssh-key -n multi-platform-controller 2>/dev/null || true
+                            # Fall through to credential collection below
                         fi
-                    done
+                    fi
 
-                    # Credentials are now validated, collect SSH key
-                    echo ""
-                    local ssh_key_path
-                    local default_ssh_key="${HOME}/.ssh/id_rsa"
+                    # Check if secrets need to be deployed (either never existed, stale, or expired and deleted)
+                    if ! kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 || \
+                       ! kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+                        # Secrets not found, need SSO profile
+                        log_info "AWS secrets not found, setting up SSO credentials..."
 
-                    # Check if SSH key is already configured and valid
-                    if [ -n "${SSH_KEY_PATH:-}" ] && file_exists "$SSH_KEY_PATH"; then
-                        log_info "Using saved SSH key: $SSH_KEY_PATH"
-                        ssh_key_path="$SSH_KEY_PATH"
-                    else
-                        # Prompt for SSH key path
-                        prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
+                        # Check if profile is set
+                        if [ -z "${AWS_PROFILE:-}" ]; then
+                            if ! prompt_for_aws_profile; then
+                                echo ""
+                                sleep 2
+                                continue  # Return to TaskRun menu
+                            fi
+                        else
+                            # Profile exists, validate
+                            if ! validate_sso_session "$AWS_PROFILE"; then
+                                if ! sso_recovery_loop "$AWS_PROFILE"; then
+                                    echo ""
+                                    sleep 2
+                                    continue  # Return to TaskRun menu
+                                fi
+                            fi
+                        fi
 
-                        # Validate SSH key exists
-                        if ! file_exists "$ssh_key_path"; then
-                            log_error "SSH key file does not exist: $ssh_key_path"
+                        # Extract temporary credentials
+                        if ! extract_sso_credentials "$AWS_PROFILE"; then
+                            log_error "Failed to extract credentials from SSO session"
                             echo ""
                             sleep 2
+                            continue  # Return to TaskRun menu
+                        fi
+
+                        # Collect SSH key
+                        echo ""
+                        local ssh_key_path
+                        local default_ssh_key="${HOME}/.ssh/id_rsa"
+
+                        if [ -n "${SSH_KEY_PATH:-}" ] && file_exists "$SSH_KEY_PATH"; then
+                            log_info "Using saved SSH key: $SSH_KEY_PATH"
+                            ssh_key_path="$SSH_KEY_PATH"
+                        else
+                            prompt_user "Enter SSH key path" ssh_key_path "$default_ssh_key"
+
+                            if ! file_exists "$ssh_key_path"; then
+                                log_error "SSH key file does not exist: $ssh_key_path"
+                                echo ""
+                                sleep 2
+                                continue  # Return to menu
+                            fi
+                            log_success "SSH key verified: $ssh_key_path"
+                        fi
+
+                        export SSH_KEY_PATH="$ssh_key_path"
+                        save_config
+
+                        # Deploy secrets via daemon API
+                        log_info "Deploying AWS secrets to cluster..."
+
+                        local credentials_json
+                        credentials_json=$(jq -n \
+                            --arg access_key "$AWS_ACCESS_KEY_ID" \
+                            --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
+                            --arg session_token "${AWS_SESSION_TOKEN:-}" \
+                            --arg ssh_key "$ssh_key_path" \
+                            '{
+                                aws_access_key_id: $access_key,
+                                aws_secret_access_key: $secret_key,
+                                aws_session_token: $session_token,
+                                ssh_key_path: $ssh_key
+                            }')
+
+                        local response
+                        response=$(api_call POST "/api/deploy/secrets" "$credentials_json")
+
+                        if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+                            log_error "Failed to deploy AWS secrets"
+                            local error_msg
+                            error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
+                            log_error "Error: $error_msg"
+                            echo ""
+                            log_info "Returning to TaskRun menu..."
+                            sleep 2
+
+                            # Clear temp credentials
+                            unset AWS_ACCESS_KEY_ID
+                            unset AWS_SECRET_ACCESS_KEY
+                            unset AWS_SESSION_TOKEN
                             continue  # Return to menu
                         fi
-                        log_success "SSH key verified: $ssh_key_path"
-                    fi
 
-                    export SSH_KEY_PATH="$ssh_key_path"
+                        # Wait for secrets to exist
+                        log_info "Waiting for secrets deployment to complete..."
 
-                    # Save SSH key path if credentials were saved
-                    if [ "${AWS_CREDENTIAL_AUTO_USE:-false}" = "true" ]; then
-                        save_config
-                        log_info "SSH key path saved to .env.local"
-                    fi
+                        local max_wait=30
+                        local elapsed=0
+                        local secrets_exist=false
 
-                    # Deploy secrets via daemon API
-                    log_info "Deploying AWS secrets to cluster..."
+                        while [ $elapsed -lt $max_wait ]; do
+                            if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
+                               kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
+                                secrets_exist=true
+                                log_success "AWS secrets deployed successfully"
+                                break
+                            fi
+                            sleep 2
+                            elapsed=$((elapsed + 2))
+                        done
 
-                    # Create JSON payload with credentials
-                    local credentials_json
-                    credentials_json=$(jq -n \
-                        --arg access_key "$AWS_ACCESS_KEY_ID" \
-                        --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
-                        --arg ssh_key "$ssh_key_path" \
-                        '{
-                            aws_access_key_id: $access_key,
-                            aws_secret_access_key: $secret_key,
-                            ssh_key_path: $ssh_key
-                        }')
-
-                    local response
-                    response=$(api_call POST "/api/deploy/secrets" "$credentials_json")
-
-                    if ! echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
-                        log_error "Failed to deploy AWS secrets"
-                        local error_msg
-                        error_msg=$(echo "$response" | jq -r '.error // "Unknown error"')
-                        log_error "Error: $error_msg"
-                        echo ""
-                        log_info "Returning to TaskRun menu..."
-                        sleep 2
-                        continue  # Return to menu
-                    fi
-
-                    # Wait for secrets to be deployed AND controller cache to sync
-                    log_info "Waiting for secrets deployment to complete..."
-
-                    # Configuration for fast-then-slow retry strategy
-                    local fast_retry_count=5         # First 5 attempts are fast
-                    local fast_retry_interval=2      # Every 2 seconds (total: 10 seconds)
-                    local slow_retry_interval=30     # Then every 30 seconds for cache sync
-
-                    # Allow override via environment variable (default: 300 seconds = 5 minutes)
-                    local total_timeout=${SECRET_WAIT_TIMEOUT:-300}
-
-                    local elapsed=0
-                    local attempt=0
-                    local secrets_exist=false
-                    local cache_sync_complete=false
-
-                    # Phase 1: Fast retries to confirm secrets exist in Kubernetes
-                    log_info "Phase 1: Checking if secrets exist in Kubernetes..."
-                    while [ $attempt -lt $fast_retry_count ]; do
-                        attempt=$((attempt + 1))
-
-                        # Check for daemon errors
-                        local daemon_response
-                        daemon_response=$(daemon_get_status)
-                        local last_error
-                        last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
-                        if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
-                            log_error "Daemon reported error: $last_error"
+                        if [ "$secrets_exist" = false ]; then
+                            log_error "Timeout: Secrets did not appear in Kubernetes"
                             echo ""
                             log_info "Returning to TaskRun menu..."
                             sleep 2
-                            continue 2  # Return to main menu
+
+                            # Clear temp credentials
+                            unset AWS_ACCESS_KEY_ID
+                            unset AWS_SECRET_ACCESS_KEY
+                            unset AWS_SESSION_TOKEN
+                            continue  # Return to menu
                         fi
 
-                        # Check if secrets exist
-                        if kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 && \
-                           kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-                            secrets_exist=true
-                            log_success "✓ Secrets exist in Kubernetes (attempt $attempt)"
-                            break
-                        fi
-
-                        log_info "Attempt $attempt/$fast_retry_count: Secrets not visible yet..."
-                        sleep $fast_retry_interval
-                        elapsed=$((elapsed + fast_retry_interval))
-                    done
-
-                    if [ "$secrets_exist" = false ]; then
-                        log_error "Timeout: Secrets did not appear in Kubernetes after $((fast_retry_count * fast_retry_interval)) seconds"
-                        echo ""
-                        log_info "Returning to TaskRun menu..."
-                        sleep 2
-                        continue  # Return to menu
-                    fi
-
-                    # Phase 2: Wait for controller pod to sync secrets into cache
-                    # The controller's Kubernetes client cache needs time to sync the new secrets
-                    # We'll wait up to 5 minutes, checking every 30 seconds
-                    echo ""
-                    log_info "Phase 2: Waiting for controller pod to sync secrets into cache..."
-                    log_info "This can take 1-3 minutes for Kubernetes client-go informers to sync"
-                    log_info "Note: Secrets may be briefly unavailable if daemon is replacing them"
-
-                    local controller_can_access=false
-                    local verification_attempts=0
-
-                    while [ $elapsed -lt $total_timeout ]; do
-                        verification_attempts=$((verification_attempts + 1))
-
-                        # Check for daemon errors
-                        local daemon_response
-                        daemon_response=$(daemon_get_status)
-                        local last_error
-                        last_error=$(echo "$daemon_response" | jq -r '.last_operation_error // ""')
-                        if [ -n "$last_error" ] && [ "$last_error" != "null" ] && [ "$last_error" != "" ]; then
-                            log_error "Daemon reported error: $last_error"
-                            echo ""
-                            log_info "Returning to TaskRun menu..."
-                            sleep 2
-                            continue 2  # Return to main menu
-                        fi
-
-                        # Verify secrets exist in Kubernetes
-                        if ! kubectl get secret aws-account -n multi-platform-controller >/dev/null 2>&1 || \
-                           ! kubectl get secret aws-ssh-key -n multi-platform-controller >/dev/null 2>&1; then
-                            log_info "Attempt $verification_attempts: Secrets temporarily unavailable (daemon may be replacing them)..."
-                            sleep $slow_retry_interval
-                            elapsed=$((elapsed + slow_retry_interval))
-                            continue
-                        fi
-
-                        # Verify controller pod can actually ACCESS the secrets
-                        log_info "Attempt $verification_attempts: Verifying controller pod can access secrets..."
-
-                        # Get controller pod name
-                        local controller_pod
-                        controller_pod=$(kubectl get pods -n multi-platform-controller -l app=multi-platform-controller -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-
-                        if [ -z "$controller_pod" ]; then
-                            log_info "Controller pod not found, waiting..."
-                            sleep $slow_retry_interval
-                            elapsed=$((elapsed + slow_retry_interval))
-                            continue
-                        fi
-
-                        # Check if controller pod can read the aws-account secret
-                        if kubectl exec -n multi-platform-controller "$controller_pod" -- \
-                           sh -c 'kubectl get secret aws-account -n multi-platform-controller -o jsonpath="{.data.access-key-id}" > /dev/null 2>&1' 2>/dev/null; then
-                            log_success "✓ Controller pod can access aws-account secret!"
-                            controller_can_access=true
-                            break
-                        else
-                            log_info "Controller cache not synced yet (elapsed: ${elapsed}s / ${total_timeout}s)"
-                            sleep $slow_retry_interval
-                            elapsed=$((elapsed + slow_retry_interval))
-                        fi
-                    done
-
-                    if [ "$controller_can_access" = false ]; then
-                        log_error "Timeout: Controller pod cannot access secrets after ${elapsed}s"
-                        log_error "The controller's client-go cache has not synced the secrets"
-                        echo ""
-                        log_info "Returning to TaskRun menu..."
-                        sleep 2
-                        continue  # Return to menu
-                    fi
-
-                        echo ""
-                        log_success "✓ AWS secrets deployed and controller cache verified"
-                        log_info "Controller can now access AWS credentials for host allocation"
-                    fi  # End of else block (secrets not found)
+                        # Clear temporary credentials from environment
+                        unset AWS_ACCESS_KEY_ID
+                        unset AWS_SECRET_ACCESS_KEY
+                        unset AWS_SESSION_TOKEN
+                    fi  # End of secrets deployment block
                     ;;
             esac
         fi
@@ -1351,8 +1241,8 @@ phase7_monitoring() {
     echo "========================================"
 
     # Handle Level 5 cleanup/options
-    # Note: cleanup_level_5 handles exits (options 4-6) directly
-    # For options 1-3, we return to let phase6 loop continue
+    # Note: cleanup_level_5 handles exits (options 5-7) and account switching (option 3) directly
+    # For options 1, 2, 4 we return codes 1, 2, 3 to let phase6 loop continue
     local level5_result
     cleanup_level_5 "$taskrun_name" "$taskrun_status" "$log_file"
     level5_result=$?

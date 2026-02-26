@@ -212,7 +212,7 @@ func (h *Handlers) DeployMetricsHandler(w http.ResponseWriter, r *http.Request) 
 // EnableFeatureRequest represents the JSON request body for POST /api/features/enable.
 //
 // Currently only "aws-secrets" is supported as a feature. The credentials map should
-// contain AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and SSH_KEY_PATH.
+// contain AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN (optional), and SSH_KEY_PATH.
 type EnableFeatureRequest struct {
 	FeatureName string            `json:"feature_name"`
 	Credentials map[string]string `json:"credentials"`
@@ -685,6 +685,7 @@ func (h *Handlers) GitSyncHandler(w http.ResponseWriter, r *http.Request) {
 type DeploySecretsRequest struct {
 	AWSAccessKeyID     string `json:"aws_access_key_id"`
 	AWSSecretAccessKey string `json:"aws_secret_access_key"`
+	AWSSessionToken    string `json:"aws_session_token"`
 	SSHKeyPath         string `json:"ssh_key_path"`
 }
 
@@ -732,6 +733,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 		// Set environment variables from request credentials
 		_ = os.Setenv("AWS_ACCESS_KEY_ID", req.AWSAccessKeyID)
 		_ = os.Setenv("AWS_SECRET_ACCESS_KEY", req.AWSSecretAccessKey)
+		_ = os.Setenv("AWS_SESSION_TOKEN", req.AWSSessionToken)
 		_ = os.Setenv("SSH_KEY_PATH", req.SSHKeyPath)
 
 		// Create deployment manager and apply secrets
@@ -742,6 +744,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 			// Clear environment variables on failure
 			_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
 			_ = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+			_ = os.Unsetenv("AWS_SESSION_TOKEN")
 			_ = os.Unsetenv("SSH_KEY_PATH")
 			return
 		}
@@ -751,6 +754,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 		// Clear environment variables after successful deployment for security
 		_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
 		_ = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		_ = os.Unsetenv("AWS_SESSION_TOKEN")
 		_ = os.Unsetenv("SSH_KEY_PATH")
 
 		// Set operation status back to idle (no error)

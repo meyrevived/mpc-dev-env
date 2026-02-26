@@ -30,6 +30,7 @@ You must have these tools installed and available in your PATH:
 | Helm | v3.0.0+ | Kubernetes package management (optional) |
 | Git | Any recent | Repository operations |
 | jq | Any recent | JSON parsing in scripts |
+| AWS CLI | v2.0+ | AWS SSO authentication |
 
 **Important**: This tool supports both **Podman** and **Docker** as container runtimes. The tool automatically detects which runtime is available and uses it for building MPC images and creating Kind clusters.
 
@@ -44,6 +45,14 @@ sudo dnf install podman
 # Enable and start Podman socket for Kind
 systemctl --user enable --now podman.socket
 ```
+
+### AWS SSO Setup
+
+Before running `make dev-env` with AWS TaskRuns:
+
+1. Ensure you have an AWS SSO profile configured in `~/.aws/config`
+2. Login to the AWS account you want to use by running `aws login`
+3. The tool will prompt for your profile name on first use and remember it
 
 ### Hardware Requirements
 
@@ -126,7 +135,7 @@ The `make dev-env` command runs through 8 phases:
    - Waits for deployment to be ready
 
 6. **TaskRun Workflow** (interactive)
-   - **AWS Credential Prompt**: Only asks if your TaskRun uses AWS platforms
+   - **AWS SSO Profile Prompt**: Only asks if your TaskRun uses AWS platforms
      - Platforms needing AWS: linux/arm64, linux/amd64, linux-mlarge/arm64, linux-mlarge/amd64
      - Platforms NOT needing AWS: local, linux/s390x, linux/ppc64le, linux/x86_64
    - Deploys AWS secrets if needed (30 seconds)
@@ -158,13 +167,23 @@ MPC deployed successfully. Continue to TaskRun? [y/n]:
 - Answer **y** to proceed to the next phase
 - Answer **n** to stop here and choose cleanup options
 
-### AWS Credential Prompt (Phase 6)
+### AWS SSO Profile Prompt (Phase 3.5/6)
+
+If no profile is saved in `.env.local`:
 ```
-Does your TaskRun use AWS platforms and need AWS secrets deployed? [y/n]:
+Enter your AWS SSO profile name:
 ```
 
-- Answer **y** if your TaskRun needs AWS platforms → prompts for AWS credentials and SSH key
-- Answer **n** if using local or IBM Cloud platforms only → skips credential collection and secrets deployment
+If SSO session is expired:
+```
+AWS SSO session for profile 'konflux-dev' is expired or invalid.
+
+To fix, run this in another terminal:
+  aws login
+
+[r] I've re-authenticated, try again
+[q] Quit
+```
 
 ### TaskRun Selection (Phase 6)
 ```
@@ -200,43 +219,36 @@ Logs are saved in the `logs/` directory with timestamps:
 
 **Log filename format**: `<taskrun-name>_YYYYMMDD_HHMMSS.log`
 
-### AWS Credential Persistence
+### AWS SSO Authentication
 
-The dev-env tool now intelligently manages AWS credentials based on your TaskRun's platform requirements:
+The dev-env tool uses AWS SSO (IAM Identity Center) for authentication:
 
-**Platform Detection:**
-- **Local platforms** (`local`, `localhost`, `linux/x86_64`): No credentials needed
-  - Validates your system is Linux x86_64 before proceeding
-- **AWS platforms** (`linux/arm64`, `linux/amd64`, etc.): Prompts for credentials if needed
-- **IBM platforms** (`linux/ppc64le`, `linux/s390x`): Not yet supported
+**Profile Storage:**
 
-**Credential Storage:**
-
-AWS credentials are stored in `.env.local` for reuse across sessions:
+Your AWS SSO profile name is stored in `.env.local` for reuse across sessions:
 
 ```bash
-AWS_ACCESS_KEY_ID="AKIA..."
-AWS_SECRET_ACCESS_KEY="..."
-AWS_REGION="us-east-1"
-AWS_CREDENTIAL_AUTO_USE=true
+AWS_PROFILE="your-sso-profile-name"
 ```
 
 **First Run:**
 1. Select an AWS platform TaskRun
-2. Enter your AWS Access Key ID and Secret Access Key
-3. Choose whether to save credentials
-4. If saved, credentials are validated automatically in future sessions
+2. Enter your AWS SSO profile name when prompted
+3. Profile is saved automatically for future sessions
 
-**Updating Credentials:**
+**Session Expiry:**
+If your SSO session expires, the tool will detect it and show:
+- The exact `aws login` command to run
+- Options to retry or quit
+- No crash, no lost cluster state
 
-To update saved credentials:
-- Option 1: Edit `.env.local` directly
-- Option 2: Run a TaskRun, credentials will be re-prompted if validation fails
-- Option 3: Delete AWS_* lines from `.env.local` to start fresh
+**Switching AWS Accounts:**
+Use option [3] in the TaskRun menu to switch to a different AWS profile/account without restarting.
 
 **Requirements:**
-- AWS CLI must be installed for credential validation
-- Install: `brew install awscli` (macOS) or `pip3 install --user awscli` (Linux)
+- AWS CLI v2 must be installed
+- An SSO profile configured in `~/.aws/config`
+- Active SSO session (via `aws login`)
 
 ## Cleanup Options
 
@@ -289,16 +301,18 @@ After a TaskRun completes (success or failure), you get the most options:
 What would you like to do next?
 [1] Apply another TaskRun (keeps everything running)
 [2] Rebuild MPC only (fix code, redeploy, test again)
-[3] Rebuild MPC + apply new TaskRun
-[4] Full teardown (delete cluster, stop daemon, exit)
-[5] Partial teardown (delete cluster, keep daemon, exit)
-[6] Exit only (keep cluster + daemon running for manual work)
+[3] Switch AWS account
+[4] Rebuild MPC + apply new TaskRun
+[5] Full teardown (delete cluster, stop daemon, exit)
+[6] Partial teardown (delete cluster, keep daemon, exit)
+[7] Exit only (keep cluster + daemon running for manual work)
 ```
 
 **Most common workflows:**
 
 - **Iterating on code**: Choose [2], make code changes, MPC rebuilds automatically, then apply TaskRun again
 - **Testing multiple TaskRuns**: Choose [1] repeatedly
+- **Switching AWS accounts**: Choose [3] to change to a different SSO profile without restarting
 - **Clean exit**: Choose [6] to keep everything running for manual kubectl work
 
 ### Interruption (Ctrl+C)
@@ -383,7 +397,7 @@ If you don't need AWS secrets:
 ```bash
 make dev-env
 
-# When prompted for credentials, answer 'n'
+# When prompted for AWS SSO profile, skip it if not needed
 # Secrets deployment will be skipped automatically
 # Continue with MPC stack and TaskRuns
 
@@ -439,7 +453,7 @@ Select TaskRun to test [1-3]: 2
 ✓ Selected TaskRun: localhost_test.yaml
 
 Does your selected TaskRun use AWS platforms? (y/n): n
-ℹ Will skip AWS credential setup
+ℹ Will skip AWS SSO setup
 
 Running make dev-env...
 You will be prompted for cleanup options after TaskRun completes.
@@ -449,10 +463,11 @@ You will be prompted for cleanup options after TaskRun completes.
 What would you like to do next?
 [1] Apply another TaskRun (keeps everything running)
 [2] Rebuild MPC only (fix code, redeploy, test again)
-[3] Rebuild MPC + apply new TaskRun
-[4] Full teardown (delete cluster, stop daemon, exit)
-[5] Partial teardown (delete cluster, keep daemon, exit)
-[6] Exit only (keep cluster + daemon running for manual work)
+[3] Switch AWS account
+[4] Rebuild MPC + apply new TaskRun
+[5] Full teardown (delete cluster, stop daemon, exit)
+[6] Partial teardown (delete cluster, keep daemon, exit)
+[7] Exit only (keep cluster + daemon running for manual work)
 ```
 
 **Benefits:**
@@ -638,15 +653,11 @@ curl http://localhost:8765/api/prerequisites | jq
 You can skip phases by modifying the environment:
 
 ```bash
-# Skip credential collection (use existing env vars)
-export AWS_ACCESS_KEY_ID="your-key"
-export AWS_SECRET_ACCESS_KEY="your-secret"
+# Pre-set your AWS profile (skip prompt)
+export AWS_PROFILE="your-sso-profile-name"
 export SSH_KEY_PATH="$HOME/.ssh/id_rsa"
-export CREDENTIALS_PROVIDED=true
 
-# Run dev-env
 make dev-env
-# Answer 'n' to credential prompt - it will use env vars
 ```
 
 ## Host Configuration
@@ -796,10 +807,8 @@ These variables are automatically detected based on your directory structure. Ma
 
 ### Optional
 
-- `AWS_ACCESS_KEY_ID`: AWS access key (for secrets deployment)
-- `AWS_SECRET_ACCESS_KEY`: AWS secret key (for secrets deployment)
+- `AWS_PROFILE`: AWS SSO profile name (for secrets deployment)
 - `SSH_KEY_PATH`: SSH key path (default: `~/.ssh/id_rsa`)
-- `CREDENTIALS_PROVIDED`: Set to `true` if credentials are pre-configured
 
 ## Makefile Targets
 
@@ -831,7 +840,7 @@ A: ~10-20 minutes for the complete workflow (cluster + MPC stack + MPC + TaskRun
 A: Yes! After a TaskRun completes, choose option [1] to apply another TaskRun without rebuilding.
 
 **Q: Do I need AWS credentials?**
-A: Only if your TaskRuns require AWS multi-platform builds. You can skip credential collection for local-only testing.
+A: Only if your TaskRuns require AWS multi-platform builds. You'll need an AWS SSO profile configured and an active SSO session. The tool will prompt for your profile name on first use.
 
 **Q: Does the tool support both Docker and Podman?**
 A: Yes! The tool automatically detects and works with both Docker and Podman (v5.3.1+). Podman is recommended for Fedora/RHEL systems due to better SELinux compatibility.

@@ -284,6 +284,28 @@ var _ = Describe("Handlers", func() {
 			requestBody := `{
 				"aws_access_key_id": "test-key-id",
 				"aws_secret_access_key": "test-secret-key",
+				"aws_session_token": "test-session-token",
+				"ssh_key_path": "/path/to/ssh/key"
+			}`
+			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			handlers.DeploySecretsHandler(rr, req)
+
+			Expect(rr.Code).To(Equal(http.StatusAccepted))
+			Expect(rr.Header().Get("Content-Type")).To(Equal("application/json"))
+
+			var response map[string]string
+			err := json.NewDecoder(rr.Body).Decode(&response)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response["status"]).To(Equal("accepted"))
+		})
+
+		It("should accept POST requests without optional session token", func() {
+			requestBody := `{
+				"aws_access_key_id": "test-key-id",
+				"aws_secret_access_key": "test-secret-key",
 				"ssh_key_path": "/path/to/ssh/key"
 			}`
 			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
@@ -338,6 +360,31 @@ var _ = Describe("Handlers", func() {
 			Expect(rr.Code).To(Equal(http.StatusBadRequest))
 		})
 
+		It("should correctly deserialize session token from request body", func() {
+			requestBody := `{
+				"aws_access_key_id": "test-key-id",
+				"aws_secret_access_key": "test-secret-key",
+				"aws_session_token": "FwoGZX-session-token-value",
+				"ssh_key_path": "/path/to/ssh/key"
+			}`
+			var parsed api.DeploySecretsRequest
+			err := json.Unmarshal([]byte(requestBody), &parsed)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(parsed.AWSSessionToken).To(Equal("FwoGZX-session-token-value"))
+		})
+
+		It("should leave session token empty when not provided in request", func() {
+			requestBody := `{
+				"aws_access_key_id": "test-key-id",
+				"aws_secret_access_key": "test-secret-key",
+				"ssh_key_path": "/path/to/ssh/key"
+			}`
+			var parsed api.DeploySecretsRequest
+			err := json.Unmarshal([]byte(requestBody), &parsed)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(parsed.AWSSessionToken).To(BeEmpty())
+		})
+
 		It("should return 405 Method Not Allowed for GET requests", func() {
 			req := httptest.NewRequest(http.MethodGet, "/api/deploy/secrets", nil)
 			rr := httptest.NewRecorder()
@@ -351,6 +398,7 @@ var _ = Describe("Handlers", func() {
 			requestBody := `{
 				"aws_access_key_id": "test-key-id",
 				"aws_secret_access_key": "test-secret-key",
+				"aws_session_token": "test-session-token",
 				"ssh_key_path": "/path/to/ssh/key"
 			}`
 			req := httptest.NewRequest(http.MethodPost, "/api/deploy/secrets", strings.NewReader(requestBody))
