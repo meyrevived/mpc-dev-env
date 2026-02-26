@@ -41,6 +41,7 @@ var _ = Describe("Deploy Manager", func() {
 		_ = os.RemoveAll(tempDir)
 		_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
 		_ = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		_ = os.Unsetenv("AWS_SESSION_TOKEN")
 		_ = os.Unsetenv("SSH_KEY_PATH")
 	})
 
@@ -229,10 +230,14 @@ exit 0
 			AfterEach(func() {
 				_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
 				_ = os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+				_ = os.Unsetenv("AWS_SESSION_TOKEN")
 				_ = os.Unsetenv("SSH_KEY_PATH")
 			})
 
-			It("should create aws and ssh secrets via kubectl", func() {
+			It("should create aws and ssh secrets via kubectl without session token", func() {
+				// Ensure session token is NOT set for this test
+				_ = os.Unsetenv("AWS_SESSION_TOKEN")
+
 				err := manager.ApplySecrets(context.Background())
 				Expect(err).NotTo(HaveOccurred())
 
@@ -242,6 +247,22 @@ exit 0
 				Expect(string(calls)).To(ContainSubstring("create secret generic aws-account --from-literal=access-key-id=test-key-id --from-literal=secret-access-key=test-secret-key --namespace multi-platform-controller"))
 				Expect(string(calls)).To(ContainSubstring("create secret generic aws-ssh-key --from-file=id_rsa=" + sshKeyPath + " --namespace multi-platform-controller"))
 				Expect(string(calls)).To(ContainSubstring("get secret aws-account -n multi-platform-controller"))
+				// Session token should NOT appear when env var is not set
+				Expect(string(calls)).NotTo(ContainSubstring("session-token"))
+			})
+
+			It("should include session token in aws-account secret when AWS_SESSION_TOKEN is set", func() {
+				_ = os.Setenv("AWS_SESSION_TOKEN", "test-session-token-value")
+
+				err := manager.ApplySecrets(context.Background())
+				Expect(err).NotTo(HaveOccurred())
+
+				calls, err := os.ReadFile(filepath.Join(tempDir, "kubectl_calls.log"))
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(string(calls)).To(ContainSubstring("--from-literal=session-token=test-session-token-value"))
+				Expect(string(calls)).To(ContainSubstring("create secret generic aws-account --from-literal=access-key-id=test-key-id --from-literal=secret-access-key=test-secret-key --namespace multi-platform-controller"))
+				Expect(string(calls)).To(ContainSubstring("create secret generic aws-ssh-key --from-file=id_rsa=" + sshKeyPath + " --namespace multi-platform-controller"))
 			})
 		})
 	})

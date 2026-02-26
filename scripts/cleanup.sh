@@ -247,55 +247,138 @@ cleanup_level_5() {
     echo ""
     log_info "TaskRun '$taskrun_name' completed with status: $taskrun_status"
     log_info "Logs saved to: $log_file"
-    echo ""
-    echo "What would you like to do next?"
-    echo "[1] Apply another TaskRun (keeps everything running)"
-    echo "[2] Rebuild MPC only (fix code, redeploy, test again)"
-    echo "[3] Rebuild MPC + apply new TaskRun"
-    echo "[4] Full teardown (delete cluster, stop daemon, exit)"
-    echo "[5] Partial teardown (delete cluster, keep daemon, exit)"
-    echo "[6] Exit only (keep cluster + daemon running for manual work)"
-    echo ""
 
-    local choice
-    choice=$(read_choice "Your choice: " "4" "1 2 3 4 5 6")
+    while true; do
+        echo ""
+        echo "What would you like to do next?"
+        echo "[1] Apply another TaskRun (keeps everything running)"
+        echo "[2] Rebuild MPC only (fix code, redeploy, test again)"
+        echo "[3] Switch AWS account"
+        echo "[4] Rebuild MPC + apply new TaskRun"
+        echo "[5] Full teardown (delete cluster, stop daemon, exit)"
+        echo "[6] Partial teardown (delete cluster, keep daemon, exit)"
+        echo "[7] Exit only (keep cluster + daemon running for manual work)"
+        echo ""
 
-    case "$choice" in
-        1)
-            log_info "Applying another TaskRun..."
-            return 1  # Signal: run taskrun selection again
-            ;;
-        2)
-            log_info "Rebuilding MPC..."
-            return 2  # Signal: rebuild MPC then show this menu again
-            ;;
-        3)
-            log_info "Rebuilding MPC and applying new TaskRun..."
-            return 3  # Signal: rebuild MPC then run taskrun selection
-            ;;
-        4)
-            log_info "Full teardown..."
-            cleanup_delete_cluster
-            cleanup_stop_daemon
-            exit 0
-            ;;
-        5)
-            log_info "Partial teardown..."
-            cleanup_delete_cluster
-            exit 0
-            ;;
-        6)
-            log_info "Exiting, cluster and daemon still running"
-            exit 0
-            ;;
-        *)
-            # Should never reach here due to validation in read_choice
-            log_error "Unexpected choice: $choice, using default (full teardown)"
-            cleanup_delete_cluster
-            cleanup_stop_daemon
-            exit 0
-            ;;
-    esac
+        local choice
+        choice=$(read_choice "Your choice: " "5" "1 2 3 4 5 6 7")
+
+        case "$choice" in
+            1)
+                log_info "Applying another TaskRun..."
+                return 1  # Signal: run taskrun selection again
+                ;;
+            2)
+                log_info "Rebuilding MPC..."
+                return 2  # Signal: rebuild MPC then show this menu again
+                ;;
+            3)
+                # Switch AWS account
+                echo ""
+                log_info "Current AWS profile: ${AWS_PROFILE:-not set}"
+                echo ""
+
+                local new_profile
+                prompt_user "Enter new AWS SSO profile name" new_profile
+
+                if [ -z "$new_profile" ]; then
+                    log_error "Profile name cannot be empty"
+                    sleep 2
+                    continue
+                fi
+
+                export AWS_PROFILE="$new_profile"
+
+                if ! validate_sso_session "$new_profile"; then
+                    if ! sso_recovery_loop "$new_profile"; then
+                        continue
+                    fi
+                fi
+
+                # Extract new credentials and redeploy secrets
+                if ! extract_sso_credentials "$new_profile"; then
+                    log_error "Failed to extract credentials"
+                    sleep 2
+                    continue
+                fi
+
+                save_config
+                log_success "Switched to AWS profile: $new_profile"
+
+                # Redeploy secrets with new credentials
+                local ssh_key_path="${SSH_KEY_PATH:-${HOME}/.ssh/id_rsa}"
+                if [ -z "${SSH_KEY_PATH:-}" ] || ! file_exists "$SSH_KEY_PATH"; then
+                    prompt_user "Enter SSH key path" ssh_key_path "$ssh_key_path"
+                    export SSH_KEY_PATH="$ssh_key_path"
+                    save_config
+                fi
+
+                log_info "Redeploying AWS secrets with new profile..."
+
+                # Delete existing secrets so they get recreated with new credentials
+                kubectl delete secret aws-account -n multi-platform-controller 2>/dev/null || true
+                kubectl delete secret aws-ssh-key -n multi-platform-controller 2>/dev/null || true
+
+                local credentials_json
+                credentials_json=$(jq -n \
+                    --arg access_key "$AWS_ACCESS_KEY_ID" \
+                    --arg secret_key "$AWS_SECRET_ACCESS_KEY" \
+                    --arg session_token "${AWS_SESSION_TOKEN:-}" \
+                    --arg ssh_key "$ssh_key_path" \
+                    '{
+                        aws_access_key_id: $access_key,
+                        aws_secret_access_key: $secret_key,
+                        aws_session_token: $session_token,
+                        ssh_key_path: $ssh_key
+                    }')
+
+                local response
+                response=$(api_call POST "/api/deploy/secrets" "$credentials_json")
+
+                if echo "$response" | jq -e '.status == "accepted"' >/dev/null 2>&1; then
+                    sleep 5  # Give secrets time to deploy
+                    log_success "AWS secrets redeployed with new profile"
+                else
+                    log_error "Failed to redeploy secrets"
+                fi
+
+                # Clear temp credentials
+                unset AWS_ACCESS_KEY_ID
+                unset AWS_SECRET_ACCESS_KEY
+                unset AWS_SESSION_TOKEN
+
+                echo ""
+                sleep 2
+                continue  # Return to this menu
+                ;;
+            4)
+                log_info "Rebuilding MPC and applying new TaskRun..."
+                return 3  # Signal: rebuild MPC then run taskrun selection
+                ;;
+            5)
+                log_info "Full teardown..."
+                cleanup_delete_cluster
+                cleanup_stop_daemon
+                exit 0
+                ;;
+            6)
+                log_info "Partial teardown..."
+                cleanup_delete_cluster
+                exit 0
+                ;;
+            7)
+                log_info "Exiting, cluster and daemon still running"
+                exit 0
+                ;;
+            *)
+                # Should never reach here due to validation in read_choice
+                log_error "Unexpected choice: $choice, using default (full teardown)"
+                cleanup_delete_cluster
+                cleanup_stop_daemon
+                exit 0
+                ;;
+        esac
+    done
 }
 
 # Level 6: User interruption (Ctrl+C)

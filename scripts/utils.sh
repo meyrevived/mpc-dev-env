@@ -229,11 +229,9 @@ load_config() {
             if [ -z "${!key:-}" ]; then
                 export "$key"="$value"
                 log_info "  Loaded $key from config"
-                # DEBUG: Show partial value for AWS credentials (without exposing full value)
-                if [ "$key" = "AWS_ACCESS_KEY_ID" ]; then
-                    log_info "  [DEBUG] AWS_ACCESS_KEY_ID length: ${#value} chars, prefix: ${value:0:4}***"
-                elif [ "$key" = "AWS_SECRET_ACCESS_KEY" ]; then
-                    log_info "  [DEBUG] AWS_SECRET_ACCESS_KEY length: ${#value} chars"
+                # DEBUG: Show loaded AWS profile
+                if [ "$key" = "AWS_PROFILE" ]; then
+                    log_info "  [DEBUG] AWS_PROFILE: $value"
                 elif [ "$key" = "SSH_KEY_PATH" ]; then
                     log_info "  [DEBUG] SSH_KEY_PATH file exists: $([ -f "$value" ] && echo "yes" || echo "no")"
                 fi
@@ -244,15 +242,15 @@ load_config() {
     fi
 }
 
-# save_config - Save environment paths and AWS credentials to configuration file
+# save_config - Save environment paths and AWS profile to configuration file
 #
 # Writes configuration to .env.local for persistence.
 # Creates the file if it doesn't exist, overwrites if it does.
 #
 # Saved variables:
 #   - MPC_DEV_ENV_PATH, MPC_REPO_PATH (always saved)
-#   - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, SSH_KEY_PATH (if set)
-#   - AWS_CREDENTIAL_AUTO_USE (if set)
+#   - AWS_PROFILE (if set)
+#   - SSH_KEY_PATH (if set)
 #
 # Side effects:
 #   - Creates or updates .env.local file
@@ -273,23 +271,20 @@ MPC_DEV_ENV_PATH="${MPC_DEV_ENV_PATH}"
 MPC_REPO_PATH="${MPC_REPO_PATH}"
 EOF
 
-    # Append AWS credentials if they exist
-    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+    # Append AWS profile if set
+    if [ -n "${AWS_PROFILE:-}" ]; then
         cat >> "$config_file" << EOF
 
-# AWS Credential Configuration
-AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
-AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
-AWS_CREDENTIAL_AUTO_USE=${AWS_CREDENTIAL_AUTO_USE:-false}
+# AWS SSO Configuration
+AWS_PROFILE="${AWS_PROFILE}"
 EOF
+    fi
 
-        # Append SSH key path if it exists
-        if [ -n "${SSH_KEY_PATH:-}" ]; then
-            cat >> "$config_file" << EOF
+    # Append SSH key path if set
+    if [ -n "${SSH_KEY_PATH:-}" ]; then
+        cat >> "$config_file" << EOF
 SSH_KEY_PATH="${SSH_KEY_PATH}"
 EOF
-        fi
     fi
 
     log_success "Configuration saved"
@@ -434,100 +429,149 @@ check_aws_cli_installed() {
     return 0
 }
 
-# validate_aws_credentials - Validate AWS credentials with retry logic
+# validate_sso_session - Validate AWS SSO session for a given profile
 #
-# Attempts to validate AWS credentials by calling aws sts get-caller-identity.
-# Retries up to 3 times with 2-minute waits between attempts.
+# Attempts to validate the SSO session by calling aws sts get-caller-identity
+# with the specified profile. No retries - if it fails, enters the recovery loop.
 #
-# Environment variables required:
-#   AWS_ACCESS_KEY_ID
-#   AWS_SECRET_ACCESS_KEY
-#   AWS_REGION
+# Arguments:
+#   $1 - AWS profile name
 #
 # Returns:
-#   0 if credentials are valid
-#   1 if validation failed after 3 attempts
-validate_aws_credentials() {
-    local max_attempts=3
-    local wait_seconds=120  # 2 minutes
-    local attempt=1
+#   0 if session is valid
+#   1 if session is invalid/expired
+validate_sso_session() {
+    local profile="$1"
 
-    # DEBUG: Log credentials being validated (sanitized)
-    log_info "[DEBUG] Starting AWS credential validation"
-    log_info "[DEBUG] AWS_ACCESS_KEY_ID set: $([ -n "${AWS_ACCESS_KEY_ID:-}" ] && echo "yes" || echo "no")"
-    log_info "[DEBUG] AWS_SECRET_ACCESS_KEY set: $([ -n "${AWS_SECRET_ACCESS_KEY:-}" ] && echo "yes" || echo "no")"
-    log_info "[DEBUG] AWS_REGION: ${AWS_REGION:-not set}"
-    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
-        log_info "[DEBUG] AWS_ACCESS_KEY_ID length: ${#AWS_ACCESS_KEY_ID} chars, prefix: ${AWS_ACCESS_KEY_ID:0:4}***"
+    if [ -z "$profile" ]; then
+        log_error "No AWS profile specified"
+        return 1
     fi
 
     # Check if AWS CLI is installed
     if ! check_aws_cli_installed; then
-        log_info "[DEBUG] AWS CLI not installed, validation cannot proceed"
         return 1
     fi
 
-    log_info "[DEBUG] AWS CLI version: $(aws --version 2>&1 | head -1)"
+    log_info "Validating AWS SSO session for profile: $profile"
 
-    while [ $attempt -le $max_attempts ]; do
-        log_info "Validating credentials..."
-        log_info "[DEBUG] Validation attempt $attempt/$max_attempts at $(date '+%Y-%m-%d %H:%M:%S')"
-        log_info "[DEBUG] Calling: aws sts get-caller-identity"
+    local aws_output
+    aws_output=$(aws sts get-caller-identity --profile "$profile" 2>&1)
+    local exit_code=$?
 
-        # Try to call AWS STS and capture output
-        local aws_output
-        aws_output=$(aws sts get-caller-identity 2>&1)
-        local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        log_success "SSO session valid for profile: $profile"
+        local account_id
+        account_id=$(echo "$aws_output" | jq -r '.Account' 2>/dev/null)
+        local arn
+        arn=$(echo "$aws_output" | jq -r '.Arn' 2>/dev/null)
+        log_info "  Account: ${account_id:-unknown}"
+        log_info "  Identity: ${arn:-unknown}"
+        return 0
+    fi
 
-        log_info "[DEBUG] AWS STS exit code: $exit_code"
-
-        if [ $exit_code -eq 0 ]; then
-            log_success "Credentials validated successfully"
-            # DEBUG: Show sanitized identity info
-            log_info "[DEBUG] AWS Identity validated:"
-            echo "$aws_output" | jq -r '.Account' 2>/dev/null && log_info "[DEBUG]   Account: $(echo "$aws_output" | jq -r '.Account')" || true
-            echo "$aws_output" | jq -r '.Arn' 2>/dev/null && log_info "[DEBUG]   ARN: $(echo "$aws_output" | jq -r '.Arn')" || true
-            return 0
-        fi
-
-        # Validation failed
-        log_error "Credential validation failed (Attempt $attempt/$max_attempts)"
-        log_info "[DEBUG] Validation failed at $(date '+%Y-%m-%d %H:%M:%S')"
-        echo ""
-        log_error "AWS STS call failed. Possible reasons:"
-        log_error "  - Invalid Access Key ID or Secret Access Key"
-        log_error "  - Network connectivity issues"
-        log_error "  - AWS service outage"
-        echo ""
-
-        # Show AWS error
-        if [ -n "$aws_output" ]; then
-            log_error "AWS Error: $aws_output"
-            log_info "[DEBUG] Full error output length: ${#aws_output} characters"
-            echo ""
-        fi
-
-        # If not the last attempt, wait and retry
-        if [ $attempt -lt $max_attempts ]; then
-            log_info "Retrying in 2 minutes... (Press Ctrl+C to cancel)"
-
-            # Countdown timer
-            local remaining=$wait_seconds
-            while [ $remaining -gt 0 ]; do
-                printf "\rRetrying in %d seconds...  " $remaining
-                sleep 1
-                remaining=$((remaining - 1))
-            done
-            echo ""  # New line after countdown
-        fi
-
-        attempt=$((attempt + 1))
-    done
-
-    # All attempts failed
-    log_error "Credential validation failed after $max_attempts attempts"
-    echo ""
-    log_error "Unable to validate AWS credentials."
-    echo ""
+    log_warning "SSO session invalid or expired for profile: $profile"
+    if [ -n "$aws_output" ]; then
+        log_info "AWS Error: $aws_output"
+    fi
     return 1
+}
+
+# extract_sso_credentials - Extract temporary credentials from SSO session
+#
+# Uses `aws configure export-credentials` to resolve the current SSO session
+# into temporary access key, secret key, and session token.
+#
+# Arguments:
+#   $1 - AWS profile name
+#
+# Sets environment variables:
+#   AWS_ACCESS_KEY_ID - Temporary access key
+#   AWS_SECRET_ACCESS_KEY - Temporary secret key
+#   AWS_SESSION_TOKEN - Session token
+#
+# Returns:
+#   0 if credentials extracted successfully
+#   1 if extraction failed
+extract_sso_credentials() {
+    local profile="$1"
+
+    log_info "Extracting temporary credentials from SSO session..."
+
+    local cred_output
+    cred_output=$(aws configure export-credentials --profile "$profile" --format env-no-export 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        log_error "Failed to extract credentials from SSO session"
+        log_error "Error: $cred_output"
+        return 1
+    fi
+
+    # Parse the output - format is KEY=VALUE lines
+    local access_key secret_key session_token
+    access_key=$(echo "$cred_output" | grep '^AWS_ACCESS_KEY_ID=' | cut -d'=' -f2-)
+    secret_key=$(echo "$cred_output" | grep '^AWS_SECRET_ACCESS_KEY=' | cut -d'=' -f2-)
+    session_token=$(echo "$cred_output" | grep '^AWS_SESSION_TOKEN=' | cut -d'=' -f2-)
+
+    if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+        log_error "Failed to parse credentials from SSO session output"
+        return 1
+    fi
+
+    export AWS_ACCESS_KEY_ID="$access_key"
+    export AWS_SECRET_ACCESS_KEY="$secret_key"
+    export AWS_SESSION_TOKEN="$session_token"
+
+    log_success "Temporary credentials extracted successfully"
+    return 0
+}
+
+# sso_recovery_loop - Interactive recovery when SSO session is expired
+#
+# Shows a clear message about the expired session and offers the user
+# two options: retry after re-authenticating, or quit.
+# No retry limit - user controls when to give up.
+#
+# Arguments:
+#   $1 - AWS profile name
+#
+# Returns:
+#   0 if user re-authenticated successfully
+#   1 if user chose to quit
+sso_recovery_loop() {
+    local profile="$1"
+
+    while true; do
+        echo ""
+        log_error "========================================="
+        log_error "AWS SSO session for profile '$profile' is"
+        log_error "expired or invalid."
+        log_error ""
+        log_error "To fix, run this in another terminal:"
+        log_error "  aws login"
+        log_error ""
+        log_error "========================================="
+        echo ""
+
+        echo "[r] I've re-authenticated, try again"
+        echo "[q] Quit"
+        echo ""
+
+        local choice
+        choice=$(read_choice "Your choice: " "r" "r q")
+
+        case "$choice" in
+            r)
+                if validate_sso_session "$profile"; then
+                    return 0
+                fi
+                log_warning "Session still invalid, try again..."
+                ;;
+            q)
+                log_info "Exiting..."
+                return 1
+                ;;
+        esac
+    done
 }

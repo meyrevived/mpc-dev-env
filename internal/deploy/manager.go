@@ -256,21 +256,36 @@ func (m *Manager) deployHostConfig(ctx context.Context) error {
 		return fmt.Errorf("failed to ensure namespace exists: %w", err)
 	}
 
-	// Construct path to host-config file
-	// Based on the bash script, this should be in temp/host-config.yaml
-	hostConfigPath := filepath.Join(m.config.GetTempDir(), "host-config.yaml")
+	// Determine which host-config.yaml to use:
+	// 1. Root host-config.yaml (source of truth, user-edited)
+	// 2. temp/host-config.yaml (fallback, may be stale)
+	// 3. Generate minimal config if neither exists
+	rootConfigPath := filepath.Join(m.config.GetMpcDevEnvPath(), "host-config.yaml")
+	tempConfigPath := filepath.Join(m.config.GetTempDir(), "host-config.yaml")
 
-	// Check if the file exists, if not generate a minimal one
-	if _, err := os.Stat(hostConfigPath); err != nil {
-		if os.IsNotExist(err) {
-			log.Println("host-config.yaml not found, generating minimal configuration for local development...")
-			if err := m.generateMinimalHostConfig(hostConfigPath); err != nil {
-				return fmt.Errorf("failed to generate host-config: %w", err)
-			}
-			log.Println("Minimal host-config.yaml generated successfully")
-		} else {
-			return fmt.Errorf("cannot access host-config file: %w", err)
+	var hostConfigPath string
+	if _, err := os.Stat(rootConfigPath); err == nil {
+		// Root config exists — copy it to temp to keep them in sync
+		hostConfigPath = tempConfigPath
+		data, readErr := os.ReadFile(rootConfigPath)
+		if readErr != nil {
+			return fmt.Errorf("failed to read root host-config.yaml: %w", readErr)
 		}
+		if writeErr := os.WriteFile(tempConfigPath, data, 0644); writeErr != nil {
+			return fmt.Errorf("failed to copy host-config.yaml to temp: %w", writeErr)
+		}
+		log.Printf("Using host-config.yaml from project root (copied to temp/)")
+	} else if _, err := os.Stat(tempConfigPath); err == nil {
+		hostConfigPath = tempConfigPath
+		log.Printf("Using existing temp/host-config.yaml")
+	} else {
+		// Neither exists, generate minimal config
+		log.Println("host-config.yaml not found, generating minimal configuration for local development...")
+		hostConfigPath = tempConfigPath
+		if err := m.generateMinimalHostConfig(hostConfigPath); err != nil {
+			return fmt.Errorf("failed to generate host-config: %w", err)
+		}
+		log.Println("Minimal host-config.yaml generated successfully")
 	}
 
 	// Check if ConfigMap already exists
@@ -619,10 +634,12 @@ func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
 	// Get AWS credentials from environment
 	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	awsSessionToken := os.Getenv("AWS_SESSION_TOKEN")
 
 	// DEBUG: Log credential presence (not values!)
 	log.Printf("[DEBUG] AWS_ACCESS_KEY_ID present: %t (length: %d)", awsAccessKeyID != "", len(awsAccessKeyID))
 	log.Printf("[DEBUG] AWS_SECRET_ACCESS_KEY present: %t (length: %d)", awsSecretAccessKey != "", len(awsSecretAccessKey))
+	log.Printf("[DEBUG] AWS_SESSION_TOKEN present: %t (length: %d)", awsSessionToken != "", len(awsSessionToken))
 	if awsAccessKeyID != "" {
 		log.Printf("[DEBUG] AWS_ACCESS_KEY_ID prefix: %s***", awsAccessKeyID[:min(4, len(awsAccessKeyID))])
 	}
@@ -649,15 +666,25 @@ func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
 	// Create the secret with the required label for controller cache
 	// The label build.appstudio.redhat.com/multi-platform-secret is required for the
 	// controller's informer cache to include this secret (see controller/controller.go:73-77)
-	log.Printf("[DEBUG] Creating secret 'aws-account' with access-key-id and secret-access-key fields")
+	log.Printf("[DEBUG] Creating secret 'aws-account' with access-key-id, secret-access-key, and session-token fields")
 	log.Printf("[DEBUG] Target namespace: %s", mpcNamespace)
 	log.Printf("[DEBUG] Adding label: build.appstudio.redhat.com/multi-platform-secret=true")
 
+	// Build kubectl args
+	args := []string{
+		"create", "secret", "generic", "aws-account",
+		"--from-literal=access-key-id=" + awsAccessKeyID,
+		"--from-literal=secret-access-key=" + awsSecretAccessKey,
+		"--namespace", mpcNamespace,
+	}
+
+	// Add session token if present (SSO temporary credentials)
+	if awsSessionToken != "" {
+		args = append(args, "--from-literal=session-token="+awsSessionToken)
+	}
+
 	// First create the secret
-	createCmd := exec.CommandContext(ctx, "kubectl", "create", "secret", "generic", "aws-account",
-		"--from-literal=access-key-id="+awsAccessKeyID,
-		"--from-literal=secret-access-key="+awsSecretAccessKey,
-		"--namespace", mpcNamespace)
+	createCmd := exec.CommandContext(ctx, "kubectl", args...)
 	createCmd.Stdout = os.Stdout
 	createCmd.Stderr = os.Stderr
 

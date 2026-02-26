@@ -271,7 +271,7 @@ env:
 	@echo "Docker/Podman:     $$(command -v docker >/dev/null 2>&1 && docker --version || command -v podman >/dev/null 2>&1 && podman --version || echo 'not found')"
 
 # Development environment management
-dev-env:
+dev-env: build
 	@echo "Starting MPC development environment setup..."
 	@# Source saved config if it exists, then auto-detect remaining paths
 	@if [ -f "$(PWD)/.env.local" ]; then \
