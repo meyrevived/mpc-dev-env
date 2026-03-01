@@ -50,12 +50,28 @@ readonly SCRIPTS_DIR="${SCRIPT_DIR}"
 readonly TASKRUNS_DIR="${MPC_DEV_ENV_PATH}/taskruns"
 readonly LOGS_DIR="${MPC_DEV_ENV_PATH}/logs"
 
-# Set up session logging - capture all output to a timestamped log file
-# This helps with debugging issues on different machines
-mkdir -p "$LOGS_DIR"
-SESSION_LOG="${LOGS_DIR}/dev-env_$(date '+%Y%m%d_%H%M%S').log"
+# Set up session directory — all logs for this session go here
+# The "latest" directory holds the current TaskRun's logs. When a new TaskRun starts,
+# "latest" is renamed to a timestamped directory and a fresh "latest" is created.
+SESSION_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+SESSION_TYPE="${SESSION_TYPE:-dev-env}"
+SESSION_DIR="${LOGS_DIR}/latest"
+
+# If latest/ already has content from a previous session, rotate it
+if [ -d "$SESSION_DIR" ] && [ "$(ls -A "$SESSION_DIR" 2>/dev/null)" ]; then
+    ROTATED_DIR="${LOGS_DIR}/${SESSION_TYPE}_${SESSION_TIMESTAMP}"
+    mv "$SESSION_DIR" "$ROTATED_DIR"
+fi
+mkdir -p "$SESSION_DIR"
+
+# Export for daemon and child processes
+export SESSION_LOG_DIR="$SESSION_DIR"
+
+# Capture script output to session log (inside latest/ so it participates in rotation)
+SESSION_LOG="${SESSION_DIR}/${SESSION_TYPE}_session_${SESSION_TIMESTAMP}.log"
 exec > >(tee -a "$SESSION_LOG") 2>&1
 echo "Session log: $SESSION_LOG"
+echo "Session directory: $SESSION_DIR"
 
 # Additional color codes for dev-env specific logging (COLOR_RESET comes from utils.sh)
 readonly COLOR_SUCCESS='\033[0;32m'
@@ -286,10 +302,10 @@ phase2_daemon_startup() {
 
     local daemon_binary="${MPC_DEV_ENV_PATH}/bin/mpc-daemon"
     local daemon_pid_file="${MPC_DEV_ENV_PATH}/daemon.pid"
-    local daemon_log_file="${MPC_DEV_ENV_PATH}/logs/daemon.log"
+    local daemon_log_file="${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
 
-    # Ensure logs directory exists
-    mkdir -p "${MPC_DEV_ENV_PATH}/logs"
+    # Ensure session directory exists
+    mkdir -p "${SESSION_DIR}"
 
     # Check if daemon is already running on port 8765
     if lsof -ti :8765 >/dev/null 2>&1; then
@@ -303,7 +319,7 @@ phase2_daemon_startup() {
 
     # Start daemon in background
     log INFO "Starting daemon in background..."
-    nohup "$daemon_binary" > "$daemon_log_file" 2>&1 &
+    nohup "$daemon_binary" >> "$daemon_log_file" 2>&1 &
     local daemon_pid=$!
 
     # Save PID to file
@@ -408,7 +424,7 @@ phase3_cluster_setup() {
                 error_msg=$(echo "$cluster_status_response" | jq -r '.error // "Unknown error"')
                 log ERROR "Cluster status check returned an error"
                 log ERROR "This usually indicates a problem with Docker/Podman or the kind binary"
-                cleanup_level_1 "Cluster status check failed: $error_msg. Check daemon logs at ${MPC_DEV_ENV_PATH}/logs/daemon.log"
+                cleanup_level_1 "Cluster status check failed: $error_msg. Check daemon logs at ${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
                 # If we reach here, user chose retry (option 3)
                 retry=true
                 continue 2  # Continue outer while loop
@@ -443,7 +459,7 @@ phase3_cluster_setup() {
         if [ "$cluster_status" != "Running" ]; then
             log ERROR "Final cluster status verification failed"
             log ERROR "Expected status: 'Running', got: '$cluster_status'"
-            cleanup_level_1 "Cluster verification failed - status is '$cluster_status' instead of 'Running'. Check daemon logs at ${MPC_DEV_ENV_PATH}/logs/daemon.log"
+            cleanup_level_1 "Cluster verification failed - status is '$cluster_status' instead of 'Running'. Check daemon logs at ${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
             # If we reach here, user chose retry (option 3)
             retry=true
             continue
@@ -453,7 +469,7 @@ phase3_cluster_setup() {
         if ! kubectl cluster-info --context kind-konflux >/dev/null 2>&1; then
             log ERROR "kubectl cannot access the cluster (context: kind-konflux)"
             log ERROR "The cluster may have been created but is not properly configured"
-            cleanup_level_1 "kubectl cannot access cluster. The cluster may exist but kubectl cannot connect. Check daemon logs at ${MPC_DEV_ENV_PATH}/logs/daemon.log"
+            cleanup_level_1 "kubectl cannot access cluster. The cluster may exist but kubectl cannot connect. Check daemon logs at ${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
             # If we reach here, user chose retry (option 3)
             retry=true
             continue
@@ -1165,12 +1181,12 @@ phase6_taskrun_workflow() {
         log SUCCESS "TaskRun workflow started"
 
         # Move to Phase 7 for monitoring
-        # Note: phase7_monitoring may call phase6_taskrun_workflow recursively
-        # via cleanup_level_5, but we handle that gracefully
-        phase7_monitoring
+        # Note: phase7_monitoring may return non-zero (e.g. poll timeout),
+        # but we always want to loop back to the TaskRun menu regardless.
+        # Use || true to prevent set -e from killing the script.
+        phase7_monitoring || true
 
         # After monitoring completes, return to menu
-        # (unless phase7 triggered another TaskRun via cleanup_level_5)
         continue
     done  # End of TaskRun workflow loop
 }
@@ -1243,13 +1259,14 @@ phase7_monitoring() {
     # Handle Level 5 cleanup/options
     # Note: cleanup_level_5 handles exits (options 5-7) and account switching (option 3) directly
     # For options 1, 2, 4 we return codes 1, 2, 3 to let phase6 loop continue
-    local level5_result
-    cleanup_level_5 "$taskrun_name" "$taskrun_status" "$log_file"
-    level5_result=$?
+    # Use || to safely capture non-zero return codes under set -e
+    local level5_result=0
+    cleanup_level_5 "$taskrun_name" "$taskrun_status" "$log_file" || level5_result=$?
 
     case $level5_result in
         1)
-            # Apply another TaskRun - return to phase6 loop
+            # Apply another TaskRun - rotate logs and return to phase6 loop
+            rotate_latest_logs
             log_info "Returning to TaskRun menu..."
             return 0
             ;;
@@ -1271,6 +1288,7 @@ phase7_monitoring() {
             # Rebuild MPC + apply new TaskRun
             if rebuild_mpc_only; then
                 log_success "MPC rebuild complete"
+                rotate_latest_logs
                 echo ""
                 log_info "Returning to TaskRun menu..."
                 return 0
@@ -1284,10 +1302,74 @@ phase7_monitoring() {
     esac
 }
 
+# Rotate the latest/ log directory to a timestamped directory.
+# Called before starting a new TaskRun so each TaskRun gets its own log directory.
+#
+# Files with open file handles (daemon log, session log) are copied to the
+# rotated directory and then truncated in place. Both use O_APPEND (daemon via
+# ">>" redirect, session via "tee -a"), so writes after truncation start at
+# position 0 — no sparse file holes.
+rotate_latest_logs() {
+    local latest_dir="${LOGS_DIR}/latest"
+
+    # Only rotate if latest/ has content
+    if [ ! -d "$latest_dir" ] || [ -z "$(ls -A "$latest_dir" 2>/dev/null)" ]; then
+        return 0
+    fi
+
+    # Collect Kubernetes artifacts into latest/ before rotating.
+    # This is synchronous — guarantees collection finishes before files are moved.
+    if daemon_is_running; then
+        log_info "Collecting Kubernetes logs and artifacts..."
+        api_call POST "/api/collect-logs" || log_warning "Log collection failed (non-fatal)"
+    fi
+
+    # Delete old TaskRuns from the namespace so future collections
+    # (including the exit-time collection) only find the new TaskRun's pods.
+    kubectl delete taskruns --all -n multi-platform-controller 2>/dev/null || true
+
+    # Stop controller log stream before rotation (file handles follow inodes)
+    local pid_file="${latest_dir}/.controller_log_stream.pid"
+    if [ -f "$pid_file" ]; then
+        local stream_pid
+        stream_pid=$(cat "$pid_file")
+        if kill -0 "$stream_pid" 2>/dev/null; then
+            kill "$stream_pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file"
+    fi
+
+    local rotation_timestamp
+    rotation_timestamp=$(date '+%Y%m%d_%H%M%S')
+    local rotated_dir="${LOGS_DIR}/${SESSION_TYPE}_${rotation_timestamp}"
+    mkdir -p "$rotated_dir"
+
+    # Move/copy files from latest/ to rotated dir
+    local file basename
+    for file in "$latest_dir"/* "$latest_dir"/.*; do
+        [ -e "$file" ] || continue
+        basename=$(basename "$file")
+        [[ "$basename" == "." || "$basename" == ".." ]] && continue
+
+        if [[ "$basename" == daemon_* || "$basename" == *_session_* ]]; then
+            # Daemon and session logs have open fds from long-running processes.
+            # Copy content to rotated dir, then truncate originals.
+            cp "$file" "$rotated_dir/"
+            : > "$file"
+        else
+            mv "$file" "$rotated_dir/"
+        fi
+    done
+
+    log_info "Rotated previous logs to: $(basename "$rotated_dir")"
+
+    # Restart controller log stream into fresh latest/
+    start_controller_log_stream
+}
+
 # Stream controller logs to file in background
 start_controller_log_stream() {
-    local log_file="$MPC_DEV_ENV_PATH/logs/mpc_log.log"
-    local pid_file="$MPC_DEV_ENV_PATH/logs/.controller_log_stream.pid"
+    local pid_file="${SESSION_DIR}/.controller_log_stream.pid"
 
     # Kill any existing log stream process
     if [ -f "$pid_file" ]; then
@@ -1302,24 +1384,31 @@ start_controller_log_stream() {
 
     # Start new log stream in background
     (
-        # Wait for controller pod to be ready
+        # Wait for controller pod to be ready and capture its name
         local max_wait=60
         local elapsed=0
+        local pod_name=""
         while [ $elapsed -lt $max_wait ]; do
-            if kubectl get pods -n multi-platform-controller -l app=multi-platform-controller -o jsonpath='{.items[0].metadata.name}' &>/dev/null; then
-                break
-            fi
+            pod_name=$(kubectl get pods -n multi-platform-controller -l app=multi-platform-controller -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) && break
             sleep 2
             elapsed=$((elapsed + 2))
         done
 
+        if [ -z "$pod_name" ]; then
+            echo "WARNING: Controller pod not found after ${max_wait}s" >&2
+            return
+        fi
+
+        local log_file="${SESSION_DIR}/controller-pod-${pod_name}.log"
+
         # Stream logs, automatically following pod restarts
-        kubectl logs -f -n multi-platform-controller deployment/multi-platform-controller --all-containers=true > "$log_file" 2>&1
+        kubectl logs -f -n multi-platform-controller deployment/multi-platform-controller \
+            --all-containers=true > "$log_file" 2>&1
     ) &
 
     local stream_pid=$!
     echo $stream_pid > "$pid_file"
-    log_success "Controller logs streaming to: $log_file (PID: $stream_pid)"
+    log_success "Controller logs streaming to: ${SESSION_DIR}/controller-pod-*.log (PID: $stream_pid)"
 }
 
 # Helper function to rebuild MPC
@@ -1412,7 +1501,7 @@ phase8_summary() {
     echo "========================================="
     echo ""
     echo "Daemon: running on http://localhost:8765"
-    echo "Daemon logs: $MPC_DEV_ENV_PATH/logs/daemon.log"
+    echo "Daemon logs: ${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
     echo "Kubeconfig: ~/.kube/config"
     echo ""
     echo "========================================="
@@ -1428,8 +1517,14 @@ cleanup_level_6() {
     echo ""
     log_info "Cleaning up and exiting..."
 
+    # Collect Kubernetes artifacts before shutdown
+    if daemon_is_running; then
+        log_info "Collecting Kubernetes logs and artifacts..."
+        api_call POST "/api/collect-logs" || log_warning "Log collection failed (non-fatal)"
+    fi
+
     # Stop controller log stream
-    local pid_file="$MPC_DEV_ENV_PATH/logs/.controller_log_stream.pid"
+    local pid_file="${SESSION_DIR}/.controller_log_stream.pid"
     if [ -f "$pid_file" ]; then
         local stream_pid
         stream_pid=$(cat "$pid_file")

@@ -50,9 +50,39 @@ systemctl --user enable --now podman.socket
 
 Before running `make dev-env` with AWS TaskRuns:
 
-1. Ensure you have an AWS SSO profile configured in `~/.aws/config`
-2. Login to the AWS account you want to use by running `aws login`
-3. The tool will prompt for your profile name on first use and remember it
+1. Connect to the AWS you want to use via Rover apps -> aws.
+2. On a local terminal, login to the AWS account you want to use by running `aws login`
+3. AWS CLI will give you a link to login to this account again for it.
+4. You can view your login information at `~/.aws/config`. The profile name you will need to give mpc_dev_env is the name in the square brackets in this file:
+
+```bash
+[default]
+login_session = arn:aws:sts::12334567890:assumed-role/12334567890-n00b/mkipod
+region = us-east-1
+```
+
+**IMPORTANT NOTICE:** The SSO login will only hold up for several hours without any activity in the account. mpc_dev_env will veridy ahead of every AWS TaskRun and at the start of each `dev-env` session if the SSO is still valid and if not, will prompt you to re-authenticate or quit:
+
+```bash
+[INFO] Validating AWS SSO session for profile: mkipod
+[WARNING] SSO session invalid or expired for profile: mkipod
+[INFO] AWS Error: 
+Your session has expired. Please reauthenticate using 'aws login'.
+
+[ERROR] =========================================
+[ERROR] AWS SSO session for profile 'mkipod' is
+[ERROR] expired or invalid.
+[ERROR] 
+[ERROR] To fix, run this in another terminal:
+[ERROR]   aws login
+[ERROR] 
+[ERROR] =========================================
+
+[r] I've re-authenticated, try again
+[q] Quit
+
+Your choice: r
+```
 
 ### Hardware Requirements
 
@@ -145,8 +175,9 @@ The `make dev-env` command runs through 8 phases:
 
 7. **TaskRun Monitoring** (varies)
    - Monitors TaskRun status
-   - Streams logs in real-time
-   - Saves logs to `logs/` directory
+   - Streams controller logs in real-time to `logs/latest/`
+   - Collects Kubernetes artifacts (pod logs, events, TaskRun YAMLs) on completion and exit
+   - Rotates `logs/latest/` to a timestamped directory when starting a new TaskRun
 
 8. **Summary** (instant)
    - Displays environment status
@@ -212,12 +243,57 @@ During Phase 8, the tool will:
 3. Apply it to the cluster automatically
 4. Stream logs to both terminal and a file
 
-### Viewing Logs
+### Log Collection
 
-Logs are saved in the `logs/` directory with timestamps:
-`logs/my-test_20251127_143052.log`
+The dev-env automatically collects Kubernetes logs and artifacts for each TaskRun session, modeled after `multi-platform-controller/test/e2e/common/common.go`. This includes:
 
-**Log filename format**: `<taskrun-name>_YYYYMMDD_HHMMSS.log`
+- **Controller pod descriptions** (resource requests, limits, node info)
+- **Kubernetes events** from the MPC namespace
+- **TaskRun resources** (full YAML of each TaskRun)
+- **Pod resources** (full YAML of each pod)
+- **Pod logs** (stdout/stderr from all containers in MPC pods)
+- **Controller log stream** (continuous `kubectl logs -f` capture)
+- **Session log** (full terminal output of the bash session)
+- **Daemon log** (Go daemon stdout/stderr)
+
+### Log Directory Structure
+
+All logs live under the `logs/` directory. The **current** TaskRun's logs are always in `logs/latest/`. When you start a new TaskRun (option [1] or [4]), the contents of `latest/` are rotated to a timestamped directory:
+
+```
+logs/
+├── latest/                                 # Current TaskRun's logs (always exists)
+│   ├── dev-env_session_20260301_143052.log # Session log (terminal output)
+│   ├── daemon_20260301_143052.log          # Daemon log
+│   ├── controller-pod-mpc-xyz.log          # Controller log stream
+│   ├── controller_pod_describe_*.txt       # Pod descriptions (collected on exit/rotation)
+│   ├── events_*.txt                        # Namespace events
+│   ├── taskrun_*.yaml                      # TaskRun resources
+│   ├── pod_*.yaml                          # Pod resources
+│   └── pod_logs_*.log                      # Container logs from pods
+│
+├── dev-env_20260301_140000/                # Rotated logs from 1st TaskRun
+│   ├── dev-env_session_20260301_140000.log
+│   ├── daemon_20260301_140000.log
+│   ├── controller-pod-mpc-abc.log
+│   ├── controller_pod_describe_*.txt
+│   └── ...
+│
+├── dev-env_20260301_141500/                # Rotated logs from 2nd TaskRun
+│   └── ...
+│
+└── test-e2e_20260301_150000.log            # test-e2e wrapper log (spans all TaskRuns)
+```
+
+**Key behaviors:**
+- `latest/` is a real directory (not a symlink) — always holds the active TaskRun's artifacts
+- When choosing "Apply another TaskRun" or "Rebuild MPC + apply new TaskRun", `latest/` is rotated to `<session-type>_YYYYMMDD_HHMMSS/`
+- Session and daemon logs have open file handles, so they're **copied** to the rotated directory and **truncated** in place (using `O_APPEND` so writes resume at position 0)
+- Other files (pod logs, events, TaskRun YAMLs) are **moved** to the rotated directory
+- Old TaskRun pods are cleaned up during rotation so the next collection only captures the new TaskRun
+- When exiting (options [5], [6], [7]), a final log collection runs before shutdown
+
+**`make test-e2e` sessions** use the same `latest/` directory structure, but rotated directories are prefixed with `test-e2e_` instead of `dev-env_`. The test-e2e wrapper log (capturing output across all TaskRuns) is written to `logs/test-e2e_<timestamp>.log` outside of `latest/`.
 
 ### AWS SSO Authentication
 
@@ -548,7 +624,7 @@ systemctl --user status podman.socket
 systemctl --user enable --now podman.socket
 
 # 2. Check daemon logs for detailed error
-cat $MPC_DEV_ENV_PATH/logs/daemon.log
+cat $MPC_DEV_ENV_PATH/logs/latest/daemon_*.log
 
 # 3. Verify kind is working with Podman
 kind version
@@ -579,7 +655,7 @@ cd $MPC_REPO_PATH
 make build
 
 # Check daemon logs for details
-cat logs/daemon.log
+cat logs/latest/daemon_*.log
 
 # Retry build (choose option [4] in cleanup menu)
 ```
@@ -601,7 +677,7 @@ kubectl describe taskrun <name> -n multi-platform-controller
 kubectl get pods -n multi-platform-controller
 
 # View daemon logs
-cat logs/daemon.log
+cat logs/latest/daemon_*.log
 ```
 
 ### Out of Disk Space
@@ -621,8 +697,8 @@ podman system prune -a  # or: docker system prune -a
 kind get clusters
 kind delete cluster --name <old-cluster>
 
-# Remove old logs
-rm logs/*.log
+# Remove old logs (rotated session directories and wrapper logs)
+rm -rf logs/dev-env_* logs/test-e2e_*
 
 # Clear Go build cache (included in make clean-all)
 go clean -cache
@@ -768,8 +844,11 @@ mpc_dev_env/
 │
 ├── logs/                                   # Runtime logs (gitignored)
 │   ├── .gitkeep                            # Ensures directory exists in git
-│   ├── daemon.log                          # Daemon output and errors
-│   └── <taskrun>_<timestamp>.log           # TaskRun execution logs
+│   └── latest/                             # Current TaskRun's logs and k8s artifacts
+│       ├── <type>_session_<ts>.log         # Session log (terminal output)
+│       ├── daemon_<ts>.log                 # Daemon log
+│       ├── controller-pod-*.log            # Controller log stream
+│       └── *.txt, *.yaml, *.log            # Collected k8s artifacts (per rotation)
 │
 ├── temp/                                   # Auto-generated temporary files
 │   └── host-config.yaml                    # Auto-generated MPC platform config
@@ -855,9 +934,7 @@ A: After a TaskRun, choose option [2] to rebuild MPC only. Make your code change
 A: Yes! Use option [6] to exit while keeping everything running, then use `kubectl apply -f your-taskrun.yaml`.
 
 **Q: Where are the logs stored?**
-A: In `logs/` directory:
-- Daemon logs: `logs/daemon.log`
-- TaskRun logs: `logs/<taskrun-name>_<timestamp>.log`
+A: Current TaskRun logs are always in `logs/latest/`. When you start a new TaskRun, the previous logs are rotated to `logs/<session-type>_<timestamp>/`. See the "Log Directory Structure" section above for full details.
 
 **Q: Can I customize the build platforms (host-config)?**
 A: Yes! The tool auto-generates a minimal config with 4 AWS platforms and 2 static hosts. To customize:
@@ -899,8 +976,9 @@ All code files are fully documented following [Go's documentation standards](htt
 If you encounter issues:
 
 1. Check the troubleshooting section above
-2. Review daemon logs: `cat logs/daemon.log`
-3. Check TaskRun logs: `cat logs/<taskrun>_<timestamp>.log`
+2. Review daemon logs: `cat logs/latest/daemon_*.log`
+3. Check session logs: `cat logs/latest/*_session_*.log`
+4. Browse collected artifacts: `ls logs/latest/` (or `ls logs/<session-type>_*/` for rotated runs)
 4. Yell at me on Slack at @MRATH (use capslock only, for that extra-yelling feel) or email me at `mrath@redhat.com` and 
 wait for me to have the time to check my emails (time-blocked for ~1 a day)
 

@@ -23,6 +23,10 @@ type Config struct {
 
 	// TempDir is the directory for temporary daemon operations (derived from MpcDevEnvPath)
 	TempDir string
+
+	// SessionLogDir is the directory for the current session's logs.
+	// Read from SESSION_LOG_DIR env var, falls back to MpcDevEnvPath/logs.
+	SessionLogDir string
 }
 
 // LoadConfig reads environment variables and constructs the Config struct.
@@ -66,11 +70,18 @@ func LoadConfig() (*Config, error) {
 	// Construct derived paths
 	tempDir := filepath.Join(mpcDevEnvPath, "temp")
 
+	// Session log directory: from env var or fallback to logs/
+	sessionLogDir := os.Getenv("SESSION_LOG_DIR")
+	if sessionLogDir == "" {
+		sessionLogDir = filepath.Join(mpcDevEnvPath, "logs")
+	}
+
 	// Create the Config struct
 	cfg := &Config{
 		MpcRepoPath:   mpcRepoPath,
 		MpcDevEnvPath: mpcDevEnvPath,
 		TempDir:       tempDir,
+		SessionLogDir: sessionLogDir,
 	}
 
 	// Validate the configuration
@@ -120,4 +131,9 @@ func (c *Config) GetMpcRepoPath() string {
 // GetMpcDevEnvPath returns the path to the mpc_dev_env repository.
 func (c *Config) GetMpcDevEnvPath() string {
 	return c.MpcDevEnvPath
+}
+
+// GetSessionLogDir returns the session log directory path.
+func (c *Config) GetSessionLogDir() string {
+	return c.SessionLogDir
 }
