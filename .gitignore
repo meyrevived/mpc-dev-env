@@ -7,7 +7,7 @@
 
 # MPC Dev Studio
 .mpc-devenv/
-*.log
+logs/
 
 # Daemon process files
 *.pid

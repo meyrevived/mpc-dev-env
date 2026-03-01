@@ -74,5 +74,8 @@ func NewRouter(handlers *Handlers) *http.ServeMux {
 	// Register POST /api/taskrun/run - Runs a TaskRun workflow asynchronously
 	mux.HandleFunc("/api/taskrun/run", handlers.TaskRunRunHandler)
 
+	// Register POST /api/collect-logs - Triggers Kubernetes log collection into session directory
+	mux.HandleFunc("/api/collect-logs", handlers.CollectLogsHandler)
+
 	return mux
 }

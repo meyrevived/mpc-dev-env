@@ -28,11 +28,18 @@ if [ -z "${MPC_DEV_ENV_PATH:-}" ]; then
     export MPC_DEV_ENV_PATH="$(dirname "$SCRIPT_DIR")"
 fi
 
-# Set up session logging - capture all output to a timestamped log file
-# This helps with debugging issues on different machines
+# Set up session directory — all logs for this session go here
+# test-e2e wraps make dev-env, which manages the latest/ directory for k8s artifacts.
+# The test-e2e session log goes in top-level logs/ to survive latest/ rotation.
 LOGS_DIR="${MPC_DEV_ENV_PATH}/logs"
+SESSION_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+SESSION_TYPE="test-e2e"
 mkdir -p "$LOGS_DIR"
-SESSION_LOG="${LOGS_DIR}/test-e2e_$(date '+%Y%m%d_%H%M%S').log"
+
+# Wrapper log captures the full test-e2e session (including all dev-env output).
+# Named without "_session_" so log rotation doesn't touch it.
+# dev-env.sh creates its own per-TaskRun session log inside latest/.
+SESSION_LOG="${LOGS_DIR}/${SESSION_TYPE}_${SESSION_TIMESTAMP}.log"
 exec > >(tee -a "$SESSION_LOG") 2>&1
 echo "Session log: $SESSION_LOG"
 
@@ -91,8 +98,9 @@ main() {
 
     cd "$MPC_DEV_ENV_PATH" || exit 1
 
-    # Run dev-env fully interactively - no piped input, no automation
-    make dev-env
+    # Run dev-env fully interactively - no piped input, no automation.
+    # Export SESSION_TYPE so rotated log directories are named test-e2e_*, not dev-env_*.
+    SESSION_TYPE="test-e2e" make dev-env
 
     local exit_code=$?
 

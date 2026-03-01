@@ -29,6 +29,7 @@ import (
 	"github.com/meyrevived/mpc-dev-env/internal/daemon/state"
 	"github.com/meyrevived/mpc-dev-env/internal/deploy"
 	"github.com/meyrevived/mpc-dev-env/internal/git"
+	"github.com/meyrevived/mpc-dev-env/internal/logcollector"
 	"github.com/meyrevived/mpc-dev-env/internal/prereq"
 	"github.com/meyrevived/mpc-dev-env/internal/taskrun"
 )
@@ -941,12 +942,11 @@ func (h *Handlers) runTaskRunWorkflow(ctx context.Context, yamlPath string) {
 
 	// Generate log filename based on TaskRun YAML filename
 	logFilename := generateLogFilename(yamlPath)
-	logPath := filepath.Join(os.Getenv("MPC_DEV_ENV_PATH"), "logs", logFilename)
+	logPath := filepath.Join(h.Config.GetSessionLogDir(), logFilename)
 
-	// Ensure logs directory exists
-	logsDir := filepath.Join(os.Getenv("MPC_DEV_ENV_PATH"), "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
-		log.Printf("ERROR: Failed to create logs directory: %v", err)
+	// Ensure session log directory exists
+	if err := os.MkdirAll(h.Config.GetSessionLogDir(), 0750); err != nil {
+		log.Printf("ERROR: Failed to create session log directory: %v", err)
 		h.StateManager.SetOperationStatus("idle", err)
 		h.StateManager.SetTaskRunInfo(&state.TaskRunInfo{
 			Status: "Error",
@@ -989,6 +989,10 @@ func (h *Handlers) runTaskRunWorkflow(ctx context.Context, yamlPath string) {
 		errMsg := fmt.Errorf("TaskRun '%s' failed - check logs at %s", name, logPath)
 		h.StateManager.SetOperationStatus("idle", errMsg)
 	}
+
+	// Log collection is triggered explicitly by the bash script via POST /api/collect-logs.
+	// This avoids a race condition where async collection could write artifacts into latest/
+	// after the bash script has already rotated the log directory for a new TaskRun.
 }
 
 // generateLogFilename generates a timestamped log filename from the TaskRun YAML path.
@@ -1000,4 +1004,39 @@ func generateLogFilename(yamlPath string) string {
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	timestamp := time.Now().Format("20060102_150405")
 	return fmt.Sprintf("%s_%s.log", base, timestamp)
+}
+
+// CollectLogsHandler handles POST /api/collect-logs requests.
+// It triggers Kubernetes artifact collection into the current session directory.
+func (h *Handlers) CollectLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionDir := h.Config.GetSessionLogDir()
+
+	collector, err := logcollector.NewCollector(sessionDir)
+	if err != nil {
+		log.Printf("ERROR: Failed to create log collector: %v", err)
+		response := map[string]string{"status": "error", "message": err.Error()}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Failed to encode response: %v", err)
+		}
+		return
+	}
+
+	// Run collection synchronously — caller (shell script) waits for it
+	collector.CollectAll(r.Context())
+
+	response := map[string]string{
+		"status":  "ok",
+		"log_dir": sessionDir,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }

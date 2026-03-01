@@ -76,7 +76,7 @@ cleanup_level_1() {
     log_error "Error: $error_message"
     log_error ""
     log_error "Logs can be found at:"
-    log_error "  - Daemon logs: ${MPC_DEV_ENV_PATH}/logs/daemon.log"
+    log_error "  - Daemon logs: ${SESSION_LOG_DIR:-${MPC_DEV_ENV_PATH}/logs}/daemon_*.log"
     log_error ""
     log_error "Common causes:"
     log_error "  - Docker/Podman not running"
@@ -128,7 +128,7 @@ cleanup_level_2() {
         log_error "Error: $error_message"
         log_error ""
         log_error "Logs can be found at:"
-        log_error "  - Daemon logs: ${MPC_DEV_ENV_PATH}/logs/daemon.log"
+        log_error "  - Daemon logs: ${SESSION_LOG_DIR:-${MPC_DEV_ENV_PATH}/logs}/daemon_*.log"
         log_error "========================================="
     else
         log_warning "$error_message"
@@ -189,7 +189,7 @@ cleanup_level_4() {
         log_error "Error: $error_message"
         log_error ""
         log_error "Logs can be found at:"
-        log_error "  - Daemon logs: ${MPC_DEV_ENV_PATH}/logs/daemon.log"
+        log_error "  - Daemon logs: ${SESSION_LOG_DIR:-${MPC_DEV_ENV_PATH}/logs}/daemon_*.log"
         log_error "  - Build output: Check daemon logs for details"
         log_error "========================================="
     else
@@ -357,22 +357,38 @@ cleanup_level_5() {
                 ;;
             5)
                 log_info "Full teardown..."
+                if daemon_is_running; then
+                    log_info "Collecting Kubernetes logs and artifacts..."
+                    api_call POST "/api/collect-logs" || log_warning "Log collection failed (non-fatal)"
+                fi
                 cleanup_delete_cluster
                 cleanup_stop_daemon
                 exit 0
                 ;;
             6)
                 log_info "Partial teardown..."
+                if daemon_is_running; then
+                    log_info "Collecting Kubernetes logs and artifacts..."
+                    api_call POST "/api/collect-logs" || log_warning "Log collection failed (non-fatal)"
+                fi
                 cleanup_delete_cluster
                 exit 0
                 ;;
             7)
                 log_info "Exiting, cluster and daemon still running"
+                if daemon_is_running; then
+                    log_info "Collecting Kubernetes logs and artifacts..."
+                    api_call POST "/api/collect-logs" || log_warning "Log collection failed (non-fatal)"
+                fi
                 exit 0
                 ;;
             *)
                 # Should never reach here due to validation in read_choice
                 log_error "Unexpected choice: $choice, using default (full teardown)"
+                if daemon_is_running; then
+                    log_info "Collecting Kubernetes logs and artifacts..."
+                    api_call POST "/api/collect-logs" || log_warning "Log collection failed (non-fatal)"
+                fi
                 cleanup_delete_cluster
                 cleanup_stop_daemon
                 exit 0
