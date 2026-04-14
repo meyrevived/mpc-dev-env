@@ -23,7 +23,10 @@
 #   MPC_DEV_ENV_PATH - Path to this repository
 #   MPC_REPO_PATH    - Path to multi-platform-controller repository
 
-.PHONY: help build test clean verify install run plugin
+# Default TaskRun for test-e2e — override with: make test-e2e TASKRUN=taskruns/your_test.yaml
+TASKRUN ?= taskruns/localhost_test.yaml
+
+.PHONY: help build test clean verify install run plugin test-e2e test-e2e-arm64 test-e2e-amd64 test-e2e-windows
 
 # help - Display all available make targets with descriptions
 help:
@@ -36,10 +39,14 @@ help:
 	@echo "  make install        - Install the daemon to /usr/local/bin"
 	@echo ""
 	@echo "Testing & Verification:"
-	@echo "  make test           - Run all Go tests"
-	@echo "  make test-api       - Run API tests only"
-	@echo "  make test-e2e       - Run end-to-end test (interactive)"
-	@echo "  make lint           - Run golangci-lint (if installed)"
+	@echo "  make test               - Run all Go tests"
+	@echo "  make test-api           - Run API tests only"
+	@echo "  make test-e2e           - Run e2e test (default: localhost TaskRun)"
+	@echo "  make test-e2e TASKRUN=X - Run e2e test with specific TaskRun file"
+	@echo "  make test-e2e-arm64     - Run e2e test for linux/arm64 platform"
+	@echo "  make test-e2e-amd64     - Run e2e test for linux/amd64 platform"
+	@echo "  make test-e2e-windows   - Run e2e test for windows/c4xlarge-amd64"
+	@echo "  make lint               - Run golangci-lint (if installed)"
 	@echo ""
 #	@echo "Plugin Development:"
 #	@echo "  make plugin         - Build the GoLand plugin"
@@ -109,9 +116,9 @@ test-api:
 	@echo "Running API tests..."
 	@go test -v ./internal/daemon/api/...
 
-# Run end-to-end test (fully interactive)
-test-e2e:
-	@echo "Running end-to-end test..."
+# Run end-to-end test (non-interactive, fail-fast)
+test-e2e: build
+	@echo "Running end-to-end test with TaskRun: $(TASKRUN)"
 	@# Source saved config if it exists, then auto-detect remaining paths
 	@if [ -f "$(PWD)/.env.local" ]; then \
 		. $(PWD)/.env.local; \
@@ -125,7 +132,17 @@ test-e2e:
 			export MPC_REPO_PATH="$$PARENT_DIR/multi-platform-controller"; \
 		fi; \
 	fi; \
-	MPC_DEV_ENV_PATH="$$MPC_DEV_ENV_PATH" MPC_REPO_PATH="$$MPC_REPO_PATH" bash scripts/test-e2e.sh
+	TASKRUN_FILE="$(TASKRUN)" MPC_DEV_ENV_PATH="$$MPC_DEV_ENV_PATH" MPC_REPO_PATH="$$MPC_REPO_PATH" bash scripts/test-e2e.sh
+
+# Convenience targets for common e2e platforms
+test-e2e-arm64:
+	$(MAKE) test-e2e TASKRUN=taskruns/e2e_arm64_test.yaml
+
+test-e2e-amd64:
+	$(MAKE) test-e2e TASKRUN=taskruns/e2e_amd64_test.yaml
+
+test-e2e-windows:
+	$(MAKE) test-e2e TASKRUN=taskruns/e2e_windows_test.yaml
 
 # Format code
 fmt:
