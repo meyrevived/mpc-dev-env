@@ -293,7 +293,7 @@ logs/
 - Old TaskRun pods are cleaned up during rotation so the next collection only captures the new TaskRun
 - When exiting (options [5], [6], [7]), a final log collection runs before shutdown
 
-**`make test-e2e` sessions** use the same `latest/` directory structure, but rotated directories are prefixed with `test-e2e_` instead of `dev-env_`. The test-e2e wrapper log (capturing output across all TaskRuns) is written to `logs/test-e2e_<timestamp>.log` outside of `latest/`.
+**`make test-e2e` sessions** use the same `latest/` directory structure, but rotated directories are prefixed with `test-e2e_` instead of `dev-env_`. The session log is written inside `latest/` as `test-e2e_session_<timestamp>.log`.
 
 ### AWS SSO Authentication
 
@@ -500,63 +500,62 @@ kubectl describe taskrun <name> -n multi-platform-controller
 make teardown
 ```
 
-### Workflow 5: Quick E2E Testing
+### Workflow 5: Non-Interactive E2E Testing
 
-Test any TaskRun from your `taskruns/` directory with interactive prompts:
+Run a single TaskRun through the full pipeline — no prompts, no menus. Builds from source, deploys, runs the TaskRun, tears down, and exits with pass/fail:
 
 ```bash
+# Default: runs taskruns/localhost_test.yaml
 make test-e2e
 
-# The workflow will:
-# 1. Auto-detect paths (MPC_DEV_ENV_PATH and MPC_REPO_PATH)
-# 2. List all TaskRun YAML files in taskruns/ directory
-# 3. Prompt you to select which TaskRun to test
-# 4. Ask if your TaskRun uses AWS platforms (y/n)
-# 5. Run the complete dev-env workflow automatically
-# 6. Prompt for cleanup options after TaskRun completes
+# Specify a different TaskRun
+make test-e2e TASKRUN=taskruns/e2e_arm64_test.yaml
+
+# Or use convenience targets for the three MPC e2e platforms
+make test-e2e-arm64      # linux/arm64 platform verification
+make test-e2e-amd64      # linux/amd64 platform verification
+make test-e2e-windows    # windows/c4xlarge-amd64 platform verification
 ```
 
-**Interactive Prompts:**
+**What happens:**
 
-```
-Available TaskRuns in taskruns/ directory:
+1. Builds the daemon binary
+2. Tears down any existing environment (clean slate)
+3. Starts daemon, creates Kind cluster, deploys MPC stack
+4. Builds and deploys MPC from your local source
+5. Smart credential detection: parses the TaskRun's `PLATFORM` param
+   - Local platforms (localhost, linux/x86_64): skips credentials
+   - Cloud platforms (linux/arm64, linux/amd64, windows/*): auto-deploys AWS secrets
+6. Applies the TaskRun and monitors until completion
+7. Collects logs, tears down, exits with 0 (pass) or non-zero (fail)
 
-  [1] aws_test.yaml
-  [2] localhost_test.yaml
-  [3] taskrun_test2.yaml
+**Prerequisites for cloud platforms:**
+```bash
+# Set your AWS profile in .env.local (persists across sessions)
+# or export it before running:
+export AWS_PROFILE="your-profile"
 
-Select TaskRun to test [1-3]: 2
-✓ Selected TaskRun: localhost_test.yaml
-
-Does your selected TaskRun use AWS platforms? (y/n): n
-ℹ Will skip AWS SSO setup
-
-Running make dev-env...
-You will be prompted for cleanup options after TaskRun completes.
-[dev-env workflow runs automatically...]
-
-# After TaskRun completes, choose cleanup option:
-What would you like to do next?
-[1] Apply another TaskRun (keeps everything running)
-[2] Rebuild MPC only (fix code, redeploy, test again)
-[3] Switch AWS account
-[4] Rebuild MPC + apply new TaskRun
-[5] Full teardown (delete cluster, stop daemon, exit)
-[6] Partial teardown (delete cluster, keep daemon, exit)
-[7] Exit only (keep cluster + daemon running for manual work)
+# Login before running (session must be active)
+aws login
 ```
 
-**Benefits:**
-- No need to manually run through the full `make dev-env` workflow
-- Quickly test different TaskRuns without rebuilding everything
-- Flexibility to choose cleanup level based on your needs
-- Logs saved automatically for verification
+If `AWS_PROFILE` is not set or the SSO session is expired, the script fails immediately with a clear message — no prompts.
 
-**Use Cases:**
-- Testing a new TaskRun YAML before committing
-- Verifying TaskRun behavior on localhost vs AWS platforms
-- Quick validation of MPC code changes with a specific TaskRun
-- Iterative testing with different cleanup strategies
+**E2E TaskRuns included:**
+
+The `taskruns/` directory includes three e2e TaskRuns that mirror the multi-platform-controller's e2e test suite. Each SSHes into an MPC-allocated host and verifies the OS and architecture:
+
+| File | Platform | Verifies |
+|------|----------|----------|
+| `e2e_arm64_test.yaml` | linux/arm64 | `uname` = Linux/aarch64 |
+| `e2e_amd64_test.yaml` | linux/amd64 | `uname` = Linux/x86_64 |
+| `e2e_windows_test.yaml` | windows/c4xlarge-amd64 | PowerShell `$env:OS` = Windows_NT, `$env:PROCESSOR_ARCHITECTURE` = AMD64 |
+
+**Use cases:**
+- CI/CD pipelines (zero interaction required)
+- Quick smoke tests after MPC code changes
+- Verifying platform allocation end-to-end
+- Regression testing across all supported platforms
 
 ## Architecture Note
 
@@ -746,11 +745,12 @@ But there is also a default built-in host-config.yaml file.
 **Location**: `mpc_dev_env/temp/host-config.yaml` 
 
 **Included Platforms**:
-- **4 AWS Dynamic Platforms**:
+- **5 AWS Dynamic Platforms**:
   - `linux/arm64` (m6g.large)
   - `linux/amd64` (m6a.large)
   - `linux-mlarge/arm64` (m6g.large)
   - `linux-mlarge/amd64` (m6a.large)
+  - `windows/c4xlarge-amd64` (c5.4xlarge) — includes PowerShell user-data for OpenSSH + Docker provisioning
 - **2 Static Hosts** (for testing, point to localhost):
   - `linux/s390x` (s390x-dev)
   - `linux/ppc64le` (ppc64le-dev)
@@ -834,11 +834,14 @@ mpc_dev_env/
 │   ├── api-client.sh                       # HTTP API client helpers
 │   ├── utils.sh                            # Utility functions (logging, prompts)
 │   ├── test-dev-env.sh                     # Comprehensive testing script
-│   └── test-e2e.sh                         # Interactive E2E TaskRun testing
+│   └── test-e2e.sh                         # Non-interactive E2E test pipeline
 │
 ├── taskruns/                               # TaskRun YAML files for testing
 │   ├── .gitkeep                            # Ensures directory exists in git
 │   ├── aws_test.yaml                       # Example TaskRun using AWS platforms
+│   ├── e2e_amd64_test.yaml                 # E2E test: linux/amd64 platform verification
+│   ├── e2e_arm64_test.yaml                 # E2E test: linux/arm64 platform verification
+│   ├── e2e_windows_test.yaml               # E2E test: windows/c4xlarge-amd64 platform verification
 │   ├── localhost_test.yaml                 # Example TaskRun using local platform
 │   └── taskrun_test2.yaml                  # Additional test TaskRun
 │
@@ -892,22 +895,26 @@ These variables are automatically detected based on your directory structure. Ma
 ## Makefile Targets
 
 ```bash
-make help           # Show all available commands
-make build          # Build the Go daemon
-make run            # Run the daemon (auto-detects paths)
-make dev-env        # Start complete development environment
-make test-e2e       # Interactive E2E test (select TaskRun, choose cleanup)
-make teardown       # Tear down everything (cluster + daemon)
-make test           # Run Go tests
-make test-api       # Run API tests only
-make lint           # Run linter - golangci-lint
-make clean          # Remove build artifacts and prune Podman containers/volumes
-make clean-all      # Remove all generated files, caches, and orphaned images
-make fmt            # Format Go code
-make vet            # Run go vet
-make deps           # Download Go dependencies
-make setup          # Setup development environment (installs golangci-lint)
-make env            # Show environment variables
+make help              # Show all available commands
+make build             # Build the Go daemon
+make run               # Run the daemon (auto-detects paths)
+make dev-env           # Start complete development environment (interactive)
+make test-e2e          # Run e2e test (default: localhost TaskRun, non-interactive)
+make test-e2e TASKRUN=X  # Run e2e test with a specific TaskRun file
+make test-e2e-arm64    # Run e2e test for linux/arm64 platform
+make test-e2e-amd64    # Run e2e test for linux/amd64 platform
+make test-e2e-windows  # Run e2e test for windows/c4xlarge-amd64
+make teardown          # Tear down everything (cluster + daemon)
+make test              # Run Go tests
+make test-api          # Run API tests only
+make lint              # Run linter - golangci-lint
+make clean             # Remove build artifacts and prune Podman containers/volumes
+make clean-all         # Remove all generated files, caches, and orphaned images
+make fmt               # Format Go code
+make vet               # Run go vet
+make deps              # Download Go dependencies
+make setup             # Setup development environment (installs golangci-lint)
+make env               # Show environment variables
 ```
 
 ## FAQ
