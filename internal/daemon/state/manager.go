@@ -319,6 +319,36 @@ func (m *StateManager) SetOperationStatus(status string, err error) {
 	m.state.LastActive = time.Now()
 }
 
+// TrySetOperationStatus atomically transitions the operation status from expectedCurrent
+// to newStatus. If the current status does not match expectedCurrent, no change is made
+// and the method returns false along with the actual current status.
+//
+// This is used by the file watcher hot-reload to avoid stomping over an in-flight
+// operation (e.g., a running TaskRun) with a "rebuilding" status.
+//
+// Example:
+//
+//	if ok, actual := manager.TrySetOperationStatus("idle", "rebuilding", nil); !ok {
+//	    log.Printf("Skipping rebuild: daemon is busy (status: %s)", actual)
+//	}
+func (m *StateManager) TrySetOperationStatus(expectedCurrent, newStatus string, err error) (ok bool, actualCurrent string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state.OperationStatus != expectedCurrent {
+		return false, m.state.OperationStatus
+	}
+
+	m.state.OperationStatus = newStatus
+	if err != nil {
+		m.state.LastOperationError = err.Error()
+	} else {
+		m.state.LastOperationError = ""
+	}
+	m.state.LastActive = time.Now()
+	return true, newStatus
+}
+
 // SetTaskRunInfo updates the TaskRun information in the state.
 // This method is thread-safe and uses a write lock.
 //

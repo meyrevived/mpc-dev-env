@@ -39,6 +39,16 @@ func (m *mockStateManager) SetOperationStatus(status string, err error) {
 	m.lastError = err
 }
 
+func (m *mockStateManager) TrySetOperationStatus(expectedCurrent, newStatus string, err error) (bool, string) {
+	if m.stateToReturn.OperationStatus != expectedCurrent {
+		return false, m.stateToReturn.OperationStatus
+	}
+	m.stateToReturn.OperationStatus = newStatus
+	m.lastStatus = newStatus
+	m.lastError = err
+	return true, newStatus
+}
+
 func (m *mockStateManager) SetTaskRunInfo(info *state.TaskRunInfo) {
 	m.stateToReturn.TaskRunInfo = info
 }
