@@ -43,6 +43,7 @@ import (
 type StateManager interface {
 	GetState() state.DevEnvironment
 	SetOperationStatus(status string, err error)
+	TrySetOperationStatus(expectedCurrent, newStatus string, err error) (ok bool, actualCurrent string)
 	SetTaskRunInfo(info *state.TaskRunInfo)
 	ClearTaskRunInfo()
 }

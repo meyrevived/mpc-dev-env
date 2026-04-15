@@ -293,14 +293,19 @@ func shouldIgnoreEvent(event fsnotify.Event) bool {
 //
 // The operation runs with a 15-minute timeout to handle long build times.
 func triggerRebuild(handlers *api.Handlers) {
+	// Atomically transition idle → rebuilding. If the daemon is busy with another
+	// operation (e.g., running a TaskRun), the transition fails and we skip the rebuild.
+	// Hot reload is a development convenience — it must never interrupt in-flight operations.
+	if ok, actual := handlers.StateManager.TrySetOperationStatus("idle", "rebuilding", nil); !ok {
+		log.Printf("Skipping hot-reload rebuild: daemon is busy (status: %s)", actual)
+		return
+	}
+
 	// Create a context with timeout for the rebuild (builds can take several minutes)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	log.Println("Starting rebuild (triggered by file watcher)...")
-
-	// Update state to rebuilding
-	handlers.StateManager.SetOperationStatus("rebuilding", nil)
 
 	// Execute native Go build
 	if err := build.BuildMPCImage(ctx, handlers.Config); err != nil {
