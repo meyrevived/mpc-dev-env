@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/meyrevived/mpc-dev-env/internal/config"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 )
 
 // Builder handles building MPC container images using Docker or Podman.
@@ -87,14 +87,14 @@ func BuildMPCImage(ctx context.Context, cfg *config.Config) error {
 //
 // The build runs in the MPC repository directory and respects context cancellation.
 func (b *Builder) buildImage(ctx context.Context, dockerfileName, imageTag string) error {
-	log.Printf("Starting image build: %s", imageTag)
+	logger.Info("starting image build", "image", imageTag)
 
 	// Step 1: Determine container runtime (docker or podman)
 	containerRuntime, err := b.detectContainerRuntime()
 	if err != nil {
 		return fmt.Errorf("failed to detect container runtime: %w", err)
 	}
-	log.Printf("Using container runtime: %s", containerRuntime)
+	logger.Info("using container runtime", "runtime", containerRuntime)
 
 	// Step 2: Set up build parameters
 	buildContext := b.config.GetMpcRepoPath()
@@ -106,9 +106,9 @@ func (b *Builder) buildImage(ctx context.Context, dockerfileName, imageTag strin
 	}
 
 	// Step 3: Log build parameters
-	log.Printf("Building image: %s", imageTag)
-	log.Printf("Build context: %s", buildContext)
-	log.Printf("Dockerfile: %s", dockerfile)
+	logger.Info("building image", "image", imageTag)
+	logger.Info("build context", "path", buildContext)
+	logger.Info("dockerfile", "path", dockerfile)
 
 	// Step 4: Construct build command
 	// Format: <runtime> build --platform <platform> -t <tag> -f <dockerfile> <context>
@@ -116,7 +116,7 @@ func (b *Builder) buildImage(ctx context.Context, dockerfileName, imageTag strin
 	// This prevents cross-compilation issues (e.g., ARM64 Mac trying to build amd64)
 	// which can cause OOM kills during Go compilation.
 	platform := "linux/" + runtime.GOARCH
-	log.Printf("Building for platform: %s", platform)
+	logger.Info("building for platform", "platform", platform)
 
 	buildArgs := []string{
 		"build",
@@ -157,7 +157,7 @@ func (b *Builder) buildImage(ctx context.Context, dockerfileName, imageTag strin
 		return fmt.Errorf("build command failed: %w", err)
 	}
 
-	log.Printf("Image build completed successfully: %s", imageTag)
+	logger.Info("image build completed successfully", "image", imageTag)
 
 	// Step 6: Load image into Kind cluster
 	if err := b.loadImageIntoKind(ctx, imageTag); err != nil {
@@ -182,7 +182,7 @@ func (b *Builder) detectContainerRuntime() (string, error) {
 		if _, err := exec.LookPath(dockerCli); err == nil {
 			return dockerCli, nil
 		}
-		log.Printf("WARNING: DOCKER_CLI is set to %s but command not found, trying alternatives...", dockerCli)
+		logger.Info("DOCKER_CLI set but command not found, trying alternatives", "dockerCli", dockerCli)
 	}
 
 	// Try podman first (it's often preferred in RHEL/Fedora environments)
@@ -226,7 +226,7 @@ func (b *Builder) streamOutput(reader io.Reader, prefix string) {
 					// Log the complete line
 					line := lineBuffer.String()
 					if line != "" {
-						log.Printf("[%s] %s", prefix, line)
+						logger.Debug("build output", "prefix", prefix, "line", line)
 					}
 					lineBuffer.Reset()
 				} else {
@@ -238,13 +238,13 @@ func (b *Builder) streamOutput(reader io.Reader, prefix string) {
 		if err == io.EOF {
 			// Log any remaining content in the buffer
 			if lineBuffer.Len() > 0 {
-				log.Printf("[%s] %s", prefix, lineBuffer.String())
+				logger.Debug("build output", "prefix", prefix, "line", lineBuffer.String())
 			}
 			break
 		}
 
 		if err != nil {
-			log.Printf("[%s-ERROR] Failed to read output: %v", prefix, err)
+			logger.Error(err, "failed to read output", "prefix", prefix)
 			break
 		}
 	}
@@ -258,7 +258,7 @@ func (b *Builder) streamOutput(reader io.Reader, prefix string) {
 // For Podman, sets KIND_EXPERIMENTAL_PROVIDER=podman environment variable.
 // The operation respects context cancellation.
 func (b *Builder) loadImageIntoKind(ctx context.Context, imageTag string) error {
-	log.Println("Loading image into Kind cluster...")
+	logger.Info("loading image into kind cluster")
 
 	// Determine container runtime
 	containerRuntime, err := b.detectContainerRuntime()
@@ -308,6 +308,6 @@ func (b *Builder) loadImageIntoKind(ctx context.Context, imageTag string) error 
 		return fmt.Errorf("kind load command failed: %w", err)
 	}
 
-	log.Println("Image loaded into Kind cluster successfully")
+	logger.Info("image loaded into kind cluster successfully")
 	return nil
 }

@@ -16,13 +16,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/meyrevived/mpc-dev-env/internal/config"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 )
 
 const (
@@ -83,7 +83,7 @@ func DeployMPC(ctx context.Context, cfg *config.Config) error {
 // distinct steps for clarity and error handling. Each step is logged and errors are
 // wrapped with context about which step failed.
 func (m *Manager) Deploy(ctx context.Context) error {
-	log.Println("Starting MPC deployment...")
+	logger.Info("starting MPC deployment")
 
 	// Step 1: Deploy host-config ConfigMap
 	if err := m.deployHostConfig(ctx); err != nil {
@@ -125,7 +125,7 @@ func (m *Manager) Deploy(ctx context.Context) error {
 		return fmt.Errorf("image verification failed: %w", err)
 	}
 
-	log.Println("MPC deployment completed successfully!")
+	logger.Info("MPC deployment completed successfully")
 	return nil
 }
 
@@ -243,13 +243,13 @@ data:
 		return fmt.Errorf("failed to write host-config file: %w", err)
 	}
 
-	log.Printf("Generated minimal host-config.yaml at: %s", outputPath)
+	logger.Info("generated minimal host-config.yaml", "path", outputPath)
 	return nil
 }
 
 // deployHostConfig deploys the host-config ConfigMap
 func (m *Manager) deployHostConfig(ctx context.Context) error {
-	log.Println("Deploying host-config ConfigMap...")
+	logger.Info("deploying host-config ConfigMap")
 
 	// Ensure namespace exists first
 	if err := m.ensureNamespace(ctx); err != nil {
@@ -274,18 +274,18 @@ func (m *Manager) deployHostConfig(ctx context.Context) error {
 		if writeErr := os.WriteFile(tempConfigPath, data, 0644); writeErr != nil {
 			return fmt.Errorf("failed to copy host-config.yaml to temp: %w", writeErr)
 		}
-		log.Printf("Using host-config.yaml from project root (copied to temp/)")
+		logger.Info("using host-config.yaml from project root (copied to temp/)")
 	} else if _, err := os.Stat(tempConfigPath); err == nil {
 		hostConfigPath = tempConfigPath
-		log.Printf("Using existing temp/host-config.yaml")
+		logger.Info("using existing temp/host-config.yaml")
 	} else {
 		// Neither exists, generate minimal config
-		log.Println("host-config.yaml not found, generating minimal configuration for local development...")
+		logger.Info("host-config.yaml not found, generating minimal configuration for local development")
 		hostConfigPath = tempConfigPath
 		if err := m.generateMinimalHostConfig(hostConfigPath); err != nil {
 			return fmt.Errorf("failed to generate host-config: %w", err)
 		}
-		log.Println("Minimal host-config.yaml generated successfully")
+		logger.Info("minimal host-config.yaml generated successfully")
 	}
 
 	// Check if ConfigMap already exists
@@ -293,11 +293,11 @@ func (m *Manager) deployHostConfig(ctx context.Context) error {
 		"-n", mpcNamespace)
 	if err := checkCmd.Run(); err == nil {
 		// ConfigMap exists, delete it first
-		log.Println("ConfigMap 'host-config' already exists, replacing...")
+		logger.Info("ConfigMap host-config already exists, replacing")
 		deleteCmd := exec.CommandContext(ctx, "kubectl", "delete", "configmap", hostConfigName,
 			"-n", mpcNamespace)
 		if err := deleteCmd.Run(); err != nil {
-			log.Printf("WARNING: Failed to delete existing ConfigMap: %v", err)
+			logger.Error(err, "failed to delete existing ConfigMap")
 		}
 	}
 
@@ -311,13 +311,13 @@ func (m *Manager) deployHostConfig(ctx context.Context) error {
 		return fmt.Errorf("failed to apply host-config ConfigMap: %w", err)
 	}
 
-	log.Println("Host-config ConfigMap deployed successfully")
+	logger.Info("host-config ConfigMap deployed successfully")
 	return nil
 }
 
 // waitForMPCDeployment waits for the MPC deployment to be created by Argo CD
 func (m *Manager) waitForMPCDeployment(ctx context.Context) error {
-	log.Println("Waiting for multi-platform-controller deployment...")
+	logger.Info("waiting for multi-platform-controller deployment")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -334,7 +334,7 @@ func (m *Manager) waitForMPCDeployment(ctx context.Context) error {
 			cmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", mpcDeploymentName,
 				"-n", mpcNamespace)
 			if err := cmd.Run(); err == nil {
-				log.Println("Multi-platform-controller deployment found")
+				logger.Info("multi-platform-controller deployment found")
 				return nil
 			}
 		}
@@ -346,7 +346,7 @@ func (m *Manager) waitForMPCDeployment(ctx context.Context) error {
 // The OTP server is a required component for MPC to function properly.
 // It provides one-time passwords for secure access to build hosts.
 func (m *Manager) waitForOTPDeployment(ctx context.Context) error {
-	log.Println("Waiting for OTP server deployment...")
+	logger.Info("waiting for OTP server deployment")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -363,7 +363,7 @@ func (m *Manager) waitForOTPDeployment(ctx context.Context) error {
 			cmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", otpDeploymentName,
 				"-n", mpcNamespace)
 			if err := cmd.Run(); err == nil {
-				log.Println("OTP server deployment found")
+				logger.Info("OTP server deployment found")
 				return nil
 			}
 		}
@@ -372,12 +372,12 @@ func (m *Manager) waitForOTPDeployment(ctx context.Context) error {
 
 // patchMPCDeployment patches the controller deployment to use custom images
 func (m *Manager) patchMPCDeployment(ctx context.Context) error {
-	log.Println("Patching multi-platform-controller deployment...")
+	logger.Info("patching multi-platform-controller deployment")
 
 	// Use the locally built image that was loaded into Kind cluster
 	// The image is built as "multi-platform-controller:latest" and Podman tags it as "localhost/multi-platform-controller:latest"
 	controllerImage := "localhost/multi-platform-controller:latest"
-	log.Printf("Patching with image: %s", controllerImage)
+	logger.Info("patching with image", "image", controllerImage)
 
 	// Create JSON patch to update image and imagePullPolicy
 	// Use "Never" to ensure Kubernetes uses the locally loaded image instead of trying to pull
@@ -406,7 +406,7 @@ func (m *Manager) patchMPCDeployment(ctx context.Context) error {
 		return fmt.Errorf("failed to patch controller deployment: %w", err)
 	}
 
-	log.Println("Controller deployment patched successfully")
+	logger.Info("controller deployment patched successfully")
 	return nil
 }
 
@@ -415,12 +415,12 @@ func (m *Manager) patchMPCDeployment(ctx context.Context) error {
 // This patches the OTP deployment to use the locally built image with imagePullPolicy: Never
 // so Kubernetes uses the image that was loaded into the Kind cluster.
 func (m *Manager) patchOTPDeployment(ctx context.Context) error {
-	log.Println("Patching OTP server deployment...")
+	logger.Info("patching OTP server deployment")
 
 	// Use the locally built image that was loaded into Kind cluster
 	// The image is built as "multi-platform-otp:latest" and Podman tags it as "localhost/multi-platform-otp:latest"
 	otpImage := "localhost/multi-platform-otp:latest"
-	log.Printf("Patching OTP with image: %s", otpImage)
+	logger.Info("patching OTP with image", "image", otpImage)
 
 	// Create JSON patch to update image and imagePullPolicy
 	// Use "Never" to ensure Kubernetes uses the locally loaded image instead of trying to pull
@@ -449,7 +449,7 @@ func (m *Manager) patchOTPDeployment(ctx context.Context) error {
 		return fmt.Errorf("failed to patch OTP deployment: %w", err)
 	}
 
-	log.Println("OTP server deployment patched successfully")
+	logger.Info("OTP server deployment patched successfully")
 	return nil
 }
 
@@ -457,7 +457,7 @@ func (m *Manager) patchOTPDeployment(ctx context.Context) error {
 //
 // Both deployments are restarted and we wait for both to be ready before returning.
 func (m *Manager) restartDeployments(ctx context.Context) error {
-	log.Println("Restarting deployments to apply changes...")
+	logger.Info("restarting deployments to apply changes")
 
 	// Restart controller deployment
 	restartCmd := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
@@ -470,7 +470,7 @@ func (m *Manager) restartDeployments(ctx context.Context) error {
 		return fmt.Errorf("failed to restart controller deployment: %w", err)
 	}
 
-	log.Println("Controller deployment restarted")
+	logger.Info("controller deployment restarted")
 
 	// Restart OTP deployment
 	otpRestartCmd := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
@@ -483,10 +483,10 @@ func (m *Manager) restartDeployments(ctx context.Context) error {
 		return fmt.Errorf("failed to restart OTP deployment: %w", err)
 	}
 
-	log.Println("OTP server deployment restarted")
+	logger.Info("OTP server deployment restarted")
 
 	// Wait for controller to be ready
-	log.Println("Waiting for controller to be ready...")
+	logger.Info("waiting for controller to be ready")
 	waitCmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 		"deployment/"+mpcDeploymentName,
 		"-n", mpcNamespace,
@@ -499,7 +499,7 @@ func (m *Manager) restartDeployments(ctx context.Context) error {
 	}
 
 	// Wait for OTP to be ready
-	log.Println("Waiting for OTP server to be ready...")
+	logger.Info("waiting for OTP server to be ready")
 	otpWaitCmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 		"deployment/"+otpDeploymentName,
 		"-n", mpcNamespace,
@@ -511,13 +511,13 @@ func (m *Manager) restartDeployments(ctx context.Context) error {
 		return fmt.Errorf("failed to wait for OTP rollout: %w", err)
 	}
 
-	log.Println("Deployments restarted successfully")
+	logger.Info("deployments restarted successfully")
 	return nil
 }
 
 // verifyDeploymentImages verifies that deployments are using the correct images
 func (m *Manager) verifyDeploymentImages(ctx context.Context) error {
-	log.Println("Verifying deployment images...")
+	logger.Info("verifying deployment images")
 
 	// The expected image is what we built and patched with
 	// Builder creates "multi-platform-controller:latest" and Podman tags it as "localhost/multi-platform-controller:latest"
@@ -538,14 +538,14 @@ func (m *Manager) verifyDeploymentImages(ctx context.Context) error {
 		return fmt.Errorf("controller using wrong image: %s (expected: %s)", actualImage, expectedControllerImage)
 	}
 
-	log.Printf("✓ Controller using correct image: %s", actualImage)
+	logger.Info("controller using correct image", "image", actualImage)
 	return nil
 }
 
 // ApplySecrets applies AWS secrets to the Kubernetes cluster
 // This creates the necessary secrets for the multi-platform-controller to access AWS resources
 func (m *Manager) ApplySecrets(ctx context.Context) error {
-	log.Println("Applying AWS secrets to Kubernetes cluster...")
+	logger.Info("applying AWS secrets to Kubernetes cluster")
 
 	// Ensure namespace exists
 	if err := m.ensureNamespace(ctx); err != nil {
@@ -567,18 +567,18 @@ func (m *Manager) ApplySecrets(ctx context.Context) error {
 		return fmt.Errorf("secret verification failed: %w", err)
 	}
 
-	log.Println("AWS secrets applied successfully!")
+	logger.Info("AWS secrets applied successfully")
 	return nil
 }
 
 // ensureNamespace creates the MPC namespace if it doesn't exist
 func (m *Manager) ensureNamespace(ctx context.Context) error {
-	log.Printf("Ensuring namespace exists: %s...", mpcNamespace)
+	logger.Info("ensuring namespace exists", "namespace", mpcNamespace)
 
 	// Check if namespace exists
 	checkCmd := exec.CommandContext(ctx, "kubectl", "get", "namespace", mpcNamespace)
 	if err := checkCmd.Run(); err == nil {
-		log.Printf("Namespace %s already exists", mpcNamespace)
+		logger.Info("namespace already exists", "namespace", mpcNamespace)
 		return nil
 	}
 
@@ -591,13 +591,13 @@ func (m *Manager) ensureNamespace(ctx context.Context) error {
 		return fmt.Errorf("failed to create namespace: %w", err)
 	}
 
-	log.Printf("Namespace %s created successfully", mpcNamespace)
+	logger.Info("namespace created successfully", "namespace", mpcNamespace)
 	return nil
 }
 
 // applyMPCManifests applies the MPC deployment manifests from the multi-platform-controller repository
 func (m *Manager) applyMPCManifests(ctx context.Context) error {
-	log.Println("Applying MPC deployment manifests...")
+	logger.Info("applying MPC deployment manifests")
 
 	// Get the MPC repository path from config
 	mpcRepoPath := m.config.GetMpcRepoPath()
@@ -614,7 +614,7 @@ func (m *Manager) applyMPCManifests(ctx context.Context) error {
 	}
 
 	// Apply using kustomize (kubectl apply -k)
-	log.Printf("Applying manifests from: %s", operatorDir)
+	logger.Info("applying manifests", "path", operatorDir)
 	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-k", operatorDir)
 	applyCmd.Stdout = os.Stdout
 	applyCmd.Stderr = os.Stderr
@@ -623,25 +623,25 @@ func (m *Manager) applyMPCManifests(ctx context.Context) error {
 		return fmt.Errorf("failed to apply MPC manifests: %w", err)
 	}
 
-	log.Println("MPC manifests applied successfully")
+	logger.Info("MPC manifests applied successfully")
 	return nil
 }
 
 // createAWSAccountSecret creates the aws-account Kubernetes secret
 func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
-	log.Println("Creating aws-account secret...")
+	logger.Info("creating aws-account secret")
 
 	// Get AWS credentials from environment
 	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	awsSessionToken := os.Getenv("AWS_SESSION_TOKEN")
 
-	// DEBUG: Log credential presence (not values!)
-	log.Printf("[DEBUG] AWS_ACCESS_KEY_ID present: %t (length: %d)", awsAccessKeyID != "", len(awsAccessKeyID))
-	log.Printf("[DEBUG] AWS_SECRET_ACCESS_KEY present: %t (length: %d)", awsSecretAccessKey != "", len(awsSecretAccessKey))
-	log.Printf("[DEBUG] AWS_SESSION_TOKEN present: %t (length: %d)", awsSessionToken != "", len(awsSessionToken))
+	// Log credential presence (not values!)
+	logger.Debug("AWS access key ID check", "present", awsAccessKeyID != "", "length", len(awsAccessKeyID))
+	logger.Debug("AWS secret access key check", "present", awsSecretAccessKey != "", "length", len(awsSecretAccessKey))
+	logger.Debug("AWS session token check", "present", awsSessionToken != "", "length", len(awsSessionToken))
 	if awsAccessKeyID != "" {
-		log.Printf("[DEBUG] AWS_ACCESS_KEY_ID prefix: %s***", awsAccessKeyID[:min(4, len(awsAccessKeyID))])
+		logger.Debug("AWS access key ID prefix", "prefix", awsAccessKeyID[:min(4, len(awsAccessKeyID))])
 	}
 
 	if awsAccessKeyID == "" || awsSecretAccessKey == "" {
@@ -649,26 +649,24 @@ func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
 	}
 
 	// Check if secret already exists
-	log.Printf("[DEBUG] Checking if secret 'aws-account' exists in namespace '%s'", mpcNamespace)
+	logger.Debug("checking if aws-account secret exists", "namespace", mpcNamespace)
 	checkCmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "aws-account", "-n", mpcNamespace)
 	if err := checkCmd.Run(); err == nil {
-		log.Println("Secret 'aws-account' already exists, replacing...")
+		logger.Info("secret aws-account already exists, replacing")
 		deleteCmd := exec.CommandContext(ctx, "kubectl", "delete", "secret", "aws-account", "-n", mpcNamespace)
 		if err := deleteCmd.Run(); err != nil {
-			log.Printf("WARNING: Failed to delete existing secret: %v", err)
+			logger.Error(err, "failed to delete existing secret")
 		} else {
-			log.Println("[DEBUG] Old secret deleted successfully")
+			logger.Debug("old secret deleted successfully")
 		}
 	} else {
-		log.Println("[DEBUG] Secret does not exist yet, creating new")
+		logger.Debug("secret does not exist yet, creating new")
 	}
 
 	// Create the secret with the required label for controller cache
 	// The label build.appstudio.redhat.com/multi-platform-secret is required for the
 	// controller's informer cache to include this secret (see controller/controller.go:73-77)
-	log.Printf("[DEBUG] Creating secret 'aws-account' with access-key-id, secret-access-key, and session-token fields")
-	log.Printf("[DEBUG] Target namespace: %s", mpcNamespace)
-	log.Printf("[DEBUG] Adding label: build.appstudio.redhat.com/multi-platform-secret=true")
+	logger.Debug("creating secret aws-account", "fields", "access-key-id, secret-access-key, session-token", "namespace", mpcNamespace, "label", "build.appstudio.redhat.com/multi-platform-secret=true")
 
 	// Build kubectl args
 	args := []string{
@@ -703,19 +701,18 @@ func (m *Manager) createAWSAccountSecret(ctx context.Context) error {
 		return fmt.Errorf("failed to label aws-account secret: %w", err)
 	}
 
-	log.Println("aws-account secret created successfully")
-	log.Printf("[DEBUG] Label added to ensure secret is cached by controller")
-	log.Printf("[DEBUG] Timestamp of secret creation: %s", time.Now().Format(time.RFC3339))
+	logger.Info("aws-account secret created successfully")
+	logger.Debug("label added to ensure secret is cached by controller", "timestamp", time.Now().Format(time.RFC3339))
 	return nil
 }
 
 // createAWSSSHKeySecret creates the aws-ssh-key Kubernetes secret
 func (m *Manager) createAWSSSHKeySecret(ctx context.Context) error {
-	log.Println("Creating aws-ssh-key secret...")
+	logger.Info("creating aws-ssh-key secret")
 
 	// Get SSH key path from environment
 	sshKeyPath := os.Getenv("SSH_KEY_PATH")
-	log.Printf("[DEBUG] SSH_KEY_PATH from environment: %s", sshKeyPath)
+	logger.Debug("SSH key path from environment", "path", sshKeyPath)
 
 	if sshKeyPath == "" {
 		return errors.New("SSH_KEY_PATH environment variable must be set")
@@ -728,21 +725,21 @@ func (m *Manager) createAWSSSHKeySecret(ctx context.Context) error {
 		}
 		return fmt.Errorf("cannot access SSH key file: %w", err)
 	} else {
-		log.Printf("[DEBUG] SSH key file exists, size: %d bytes, mode: %s", stat.Size(), stat.Mode())
+		logger.Debug("SSH key file stats", "size", stat.Size(), "mode", stat.Mode())
 	}
 
 	// Check if secret already exists
 	checkCmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "aws-ssh-key", "-n", mpcNamespace)
 	if err := checkCmd.Run(); err == nil {
-		log.Println("Secret 'aws-ssh-key' already exists, replacing...")
+		logger.Info("secret aws-ssh-key already exists, replacing")
 		deleteCmd := exec.CommandContext(ctx, "kubectl", "delete", "secret", "aws-ssh-key", "-n", mpcNamespace)
 		if err := deleteCmd.Run(); err != nil {
-			log.Printf("WARNING: Failed to delete existing secret: %v", err)
+			logger.Error(err, "failed to delete existing secret")
 		}
 	}
 
 	// Create the secret
-	log.Printf("[DEBUG] Adding label: build.appstudio.redhat.com/multi-platform-secret=true")
+	logger.Debug("adding label", "label", "build.appstudio.redhat.com/multi-platform-secret=true")
 	createCmd := exec.CommandContext(ctx, "kubectl", "create", "secret", "generic", "aws-ssh-key",
 		"--from-file=id_rsa="+sshKeyPath,
 		"--namespace", mpcNamespace)
@@ -764,43 +761,43 @@ func (m *Manager) createAWSSSHKeySecret(ctx context.Context) error {
 		return fmt.Errorf("failed to label aws-ssh-key secret: %w", err)
 	}
 
-	log.Println("aws-ssh-key secret created successfully")
-	log.Printf("[DEBUG] Label added to ensure secret is cached by controller")
+	logger.Info("aws-ssh-key secret created successfully")
+	logger.Debug("label added to ensure secret is cached by controller")
 	return nil
 }
 
 // verifySecrets verifies that all required secrets exist
 func (m *Manager) verifySecrets(ctx context.Context) error {
-	log.Println("Verifying secrets...")
-	log.Printf("[DEBUG] Verification timestamp: %s", time.Now().Format(time.RFC3339))
+	logger.Info("verifying secrets")
+	logger.Debug("verification started", "timestamp", time.Now().Format(time.RFC3339))
 
 	requiredSecrets := []string{"aws-account", "aws-ssh-key"}
 
 	for _, secretName := range requiredSecrets {
-		log.Printf("[DEBUG] Checking secret '%s' in namespace '%s'", secretName, mpcNamespace)
+		logger.Debug("checking secret", "name", secretName, "namespace", mpcNamespace)
 		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", secretName, "-n", mpcNamespace)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("secret '%s' not found in namespace %s", secretName, mpcNamespace)
 		}
-		log.Printf("✓ Secret exists: %s", secretName)
+		logger.Info("secret exists", "name", secretName)
 
 		// DEBUG: Get detailed secret info
 		detailsCmd := exec.CommandContext(ctx, "kubectl", "get", "secret", secretName, "-n", mpcNamespace, "-o", "yaml")
 		if output, err := detailsCmd.CombinedOutput(); err == nil {
-			log.Printf("[DEBUG] Secret '%s' YAML output length: %d bytes", secretName, len(output))
+			logger.Debug("secret YAML output", "name", secretName, "length", len(output))
 			// Don't log the full YAML as it contains sensitive data
 		}
 	}
 
-	log.Println("All required secrets exist")
-	log.Printf("[DEBUG] Secret verification complete at: %s", time.Now().Format(time.RFC3339))
+	logger.Info("all required secrets exist")
+	logger.Debug("secret verification complete", "timestamp", time.Now().Format(time.RFC3339))
 	return nil
 }
 
 // ApplyKonflux deploys Konflux to the Kind cluster
 // This runs the necessary scripts from the konflux-ci repository
 func (m *Manager) ApplyKonflux(ctx context.Context) error {
-	log.Println("Deploying Konflux to Kind cluster...")
+	logger.Info("deploying Konflux to Kind cluster")
 
 	// Get the konflux-ci directory path (sibling to mpc_dev_env)
 	konfluxCIDir := filepath.Join(filepath.Dir(m.config.GetMpcDevEnvPath()), "konflux-ci")
@@ -814,30 +811,24 @@ func (m *Manager) ApplyKonflux(ctx context.Context) error {
 	}
 
 	// Step 1: Deploy dependencies (Tekton, Argo CD, etc.)
-	log.Println("Step 1/3: Deploying Konflux dependencies...")
+	logger.Info("deploying Konflux dependencies", "step", "1/3")
 	if err := m.runKonfluxScript(ctx, konfluxCIDir, "deploy-deps.sh"); err != nil {
 		return fmt.Errorf("failed to deploy Konflux dependencies: %w", err)
 	}
 
 	// Step 2: Deploy Konflux components
-	log.Println("Step 2/3: Deploying Konflux components...")
+	logger.Info("deploying Konflux components", "step", "2/3")
 	if err := m.runKonfluxScript(ctx, konfluxCIDir, "deploy-konflux.sh"); err != nil {
 		return fmt.Errorf("failed to deploy Konflux components: %w", err)
 	}
 
 	// Step 3: Deploy test resources
-	log.Println("Step 3/3: Deploying Konflux test resources...")
+	logger.Info("deploying Konflux test resources", "step", "3/3")
 	if err := m.runKonfluxScript(ctx, konfluxCIDir, "deploy-test-resources.sh"); err != nil {
 		return fmt.Errorf("failed to deploy Konflux test resources: %w", err)
 	}
 
-	log.Println("Konflux deployed successfully!")
-	log.Println("")
-	log.Println("Konflux UI will be available at: https://localhost:9443")
-	log.Println("Default login:")
-	log.Println("  Username: user2@konflux.dev")
-	log.Println("  Password: password")
-	log.Println("")
+	logger.Info("Konflux deployed successfully", "ui", "https://localhost:9443", "username", "user2@konflux.dev", "password", "password")
 
 	return nil
 }
@@ -854,7 +845,7 @@ func (m *Manager) runKonfluxScript(ctx context.Context, konfluxCIDir, scriptName
 		return fmt.Errorf("cannot access script: %w", err)
 	}
 
-	log.Printf("Running %s...", scriptName)
+	logger.Info("running script", "script", scriptName)
 
 	// Execute the script
 	cmd := exec.CommandContext(ctx, "bash", scriptPath)
@@ -866,6 +857,6 @@ func (m *Manager) runKonfluxScript(ctx context.Context, konfluxCIDir, scriptName
 		return fmt.Errorf("script %s failed: %w", scriptName, err)
 	}
 
-	log.Printf("Script %s completed successfully", scriptName)
+	logger.Info("script completed successfully", "script", scriptName)
 	return nil
 }

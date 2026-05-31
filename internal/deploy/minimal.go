@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/meyrevived/mpc-dev-env/internal/config"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 )
 
 const (
@@ -63,13 +63,8 @@ func NewMinimalDeployer(cfg *config.Config) *MinimalDeployer {
 // Each component is deployed sequentially and verified before proceeding to the next.
 // The entire deployment typically completes in 3-5 minutes.
 func (m *MinimalDeployer) DeployMinimalStack(ctx context.Context) error {
-	log.Println("Starting minimal MPC stack deployment...")
-	log.Println("This deployment includes:")
-	log.Println("  1. Tekton Pipelines (TaskRun engine)")
-	log.Println("  2. cert-manager (TLS certificates for OTP)")
-	log.Println("  3. MPC Operator (controller)")
-	log.Println("  4. OTP Server (one-time passwords)")
-	log.Println("")
+	logger.Info("starting minimal MPC stack deployment")
+	logger.Info("deployment includes: 1. Tekton Pipelines (TaskRun engine), 2. cert-manager (TLS certificates for OTP), 3. MPC Operator (controller), 4. OTP Server (one-time passwords)")
 
 	// Step 1: Deploy Tekton Pipelines
 	if err := m.DeployTekton(ctx); err != nil {
@@ -91,9 +86,7 @@ func (m *MinimalDeployer) DeployMinimalStack(ctx context.Context) error {
 		return fmt.Errorf("failed to deploy OTP Server: %w", err)
 	}
 
-	log.Println("")
-	log.Println("Minimal MPC stack deployed successfully!")
-	log.Println("Total components: Tekton Pipelines + cert-manager + MPC Operator + OTP Server")
+	logger.Info("minimal MPC stack deployed successfully", "components", "Tekton Pipelines + cert-manager + MPC Operator + OTP Server")
 	return nil
 }
 
@@ -107,8 +100,7 @@ func (m *MinimalDeployer) DeployMinimalStack(ctx context.Context) error {
 // webhook validation. Without waiting for the webhook, Task creation fails with
 // "connection refused" errors.
 func (m *MinimalDeployer) DeployTekton(ctx context.Context) error {
-	log.Println("Deploying Tekton Pipelines...")
-	log.Printf("Using Tekton release: %s", tektonReleaseURL)
+	logger.Info("deploying Tekton Pipelines", "releaseURL", tektonReleaseURL)
 
 	// Apply Tekton release YAML
 	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", tektonReleaseURL)
@@ -119,14 +111,14 @@ func (m *MinimalDeployer) DeployTekton(ctx context.Context) error {
 		return fmt.Errorf("failed to apply Tekton release: %w", err)
 	}
 
-	log.Println("Tekton manifests applied, waiting for pods to be ready...")
+	logger.Info("tekton manifests applied, waiting for pods to be ready")
 
 	// Wait for Tekton controller to be ready
 	if err := m.waitForTektonReady(ctx); err != nil {
 		return fmt.Errorf("tekton deployment not ready: %w", err)
 	}
 
-	log.Println("✓ Tekton Pipelines deployed successfully")
+	logger.Info("tekton Pipelines deployed successfully")
 	return nil
 }
 
@@ -139,7 +131,7 @@ func (m *MinimalDeployer) DeployTekton(ctx context.Context) error {
 // Both are required for MPC to function correctly. The webhook is especially critical
 // as it validates Tasks created by the MPC operator.
 func (m *MinimalDeployer) waitForTektonReady(ctx context.Context) error {
-	log.Println("Waiting for Tekton controller deployment...")
+	logger.Info("waiting for tekton controller deployment")
 
 	// Wait for tekton-pipelines-controller deployment
 	controllerCmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
@@ -153,11 +145,11 @@ func (m *MinimalDeployer) waitForTektonReady(ctx context.Context) error {
 		return fmt.Errorf("timeout waiting for Tekton controller: %w", err)
 	}
 
-	log.Println("Tekton Pipelines controller is ready")
+	logger.Info("tekton Pipelines controller is ready")
 
 	// Wait for tekton-pipelines-webhook deployment
 	// This is critical - MPC operator creates Tekton Tasks which need webhook validation
-	log.Println("Waiting for Tekton webhook deployment...")
+	logger.Info("waiting for tekton webhook deployment")
 
 	webhookCmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 		"deployment/tekton-pipelines-webhook",
@@ -170,8 +162,8 @@ func (m *MinimalDeployer) waitForTektonReady(ctx context.Context) error {
 		return fmt.Errorf("timeout waiting for Tekton webhook: %w", err)
 	}
 
-	log.Println("Tekton Pipelines webhook is ready")
-	log.Println("Tekton Pipelines fully ready (controller + webhook)")
+	logger.Info("tekton Pipelines webhook is ready")
+	logger.Info("tekton Pipelines fully ready", "components", "controller + webhook")
 	return nil
 }
 
@@ -189,8 +181,7 @@ func (m *MinimalDeployer) waitForTektonReady(ctx context.Context) error {
 //  2. Waits for cert-manager deployments to be ready
 //  3. Waits for the webhook to be ready (required before creating certificates)
 func (m *MinimalDeployer) DeployCertManager(ctx context.Context) error {
-	log.Println("Deploying cert-manager...")
-	log.Printf("Using cert-manager release: %s", certManagerReleaseURL)
+	logger.Info("deploying cert-manager", "releaseURL", certManagerReleaseURL)
 
 	// Apply cert-manager release YAML
 	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", certManagerReleaseURL)
@@ -201,14 +192,14 @@ func (m *MinimalDeployer) DeployCertManager(ctx context.Context) error {
 		return fmt.Errorf("failed to apply cert-manager release: %w", err)
 	}
 
-	log.Println("cert-manager manifests applied, waiting for pods to be ready...")
+	logger.Info("cert-manager manifests applied, waiting for pods to be ready")
 
 	// Wait for cert-manager to be ready
 	if err := m.waitForCertManagerReady(ctx); err != nil {
 		return fmt.Errorf("cert-manager deployment not ready: %w", err)
 	}
 
-	log.Println("✓ cert-manager deployed successfully")
+	logger.Info("cert-manager deployed successfully")
 	return nil
 }
 
@@ -229,7 +220,7 @@ func (m *MinimalDeployer) waitForCertManagerReady(ctx context.Context) error {
 	}
 
 	for _, deployment := range deployments {
-		log.Printf("Waiting for %s deployment...", deployment)
+		logger.Info("waiting for deployment", "deployment", deployment)
 		cmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 			"deployment/"+deployment,
 			"-n", certManagerNamespace,
@@ -240,15 +231,15 @@ func (m *MinimalDeployer) waitForCertManagerReady(ctx context.Context) error {
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("timeout waiting for %s: %w", deployment, err)
 		}
-		log.Printf("%s is ready", deployment)
+		logger.Info("deployment is ready", "deployment", deployment)
 	}
 
 	// Wait a bit for webhook to be fully operational
 	// The deployment being ready doesn't mean the webhook endpoint is serving
-	log.Println("Waiting for cert-manager webhook to be fully operational...")
+	logger.Info("waiting for cert-manager webhook to be fully operational")
 	time.Sleep(10 * time.Second)
 
-	log.Println("cert-manager fully ready")
+	logger.Info("cert-manager fully ready")
 	return nil
 }
 
@@ -258,7 +249,7 @@ func (m *MinimalDeployer) waitForCertManagerReady(ctx context.Context) error {
 // using `kubectl apply -Rf`. The operator manages the MPC controller deployment and creates
 // the necessary Tekton Tasks for multi-platform builds.
 func (m *MinimalDeployer) DeployMPCOperator(ctx context.Context) error {
-	log.Println("Deploying MPC Operator...")
+	logger.Info("deploying MPC Operator")
 
 	// Get the MPC repository path from config
 	mpcRepoPath := m.config.GetMpcRepoPath()
@@ -275,7 +266,7 @@ func (m *MinimalDeployer) DeployMPCOperator(ctx context.Context) error {
 	}
 
 	// Apply using kustomize (kubectl apply -k)
-	log.Printf("Applying manifests from: %s", operatorDir)
+	logger.Info("applying manifests", "path", operatorDir)
 	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-k", operatorDir)
 	applyCmd.Stdout = os.Stdout
 	applyCmd.Stderr = os.Stderr
@@ -284,8 +275,8 @@ func (m *MinimalDeployer) DeployMPCOperator(ctx context.Context) error {
 		return fmt.Errorf("failed to apply MPC operator manifests: %w", err)
 	}
 
-	log.Println("MPC Operator manifests applied")
-	log.Println("Note: MPC operator will not be ready until Phase 5 builds and loads the image")
+	logger.Info("MPC Operator manifests applied")
+	logger.Info("MPC operator will not be ready until Phase 5 builds and loads the image")
 
 	// Don't wait for deployment to be ready here - it needs the image from Phase 5
 	// Just verify the deployment was created
@@ -293,14 +284,14 @@ func (m *MinimalDeployer) DeployMPCOperator(ctx context.Context) error {
 		return fmt.Errorf("MPC Operator deployment not created: %w", err)
 	}
 
-	log.Println("✓ MPC Operator manifests deployed successfully")
+	logger.Info("MPC Operator manifests deployed successfully")
 	return nil
 }
 
 // verifyMPCOperatorCreated verifies that the MPC operator deployment was created
 // (but doesn't wait for it to be ready - that happens in Phase 5)
 func (m *MinimalDeployer) verifyMPCOperatorCreated(ctx context.Context) error {
-	log.Println("Verifying multi-platform-controller deployment was created...")
+	logger.Info("verifying multi-platform-controller deployment was created")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -317,7 +308,7 @@ func (m *MinimalDeployer) verifyMPCOperatorCreated(ctx context.Context) error {
 			cmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", mpcDeploymentName,
 				"-n", mpcNamespace)
 			if err := cmd.Run(); err == nil {
-				log.Println("Multi-platform-controller deployment created successfully")
+				logger.Info("multi-platform-controller deployment created successfully")
 				return nil
 			}
 		}
@@ -338,7 +329,7 @@ func (m *MinimalDeployer) verifyMPCOperatorCreated(ctx context.Context) error {
 //  3. Waits for the certificate to be ready
 //  4. Applies the OTP server deployment manifests
 func (m *MinimalDeployer) DeployOTPServer(ctx context.Context) error {
-	log.Println("Deploying OTP Server...")
+	logger.Info("deploying OTP Server")
 
 	// Step 1: Create TLS certificate for OTP server
 	// This must happen BEFORE applying OTP manifests because the deployment
@@ -362,7 +353,7 @@ func (m *MinimalDeployer) DeployOTPServer(ctx context.Context) error {
 	}
 
 	// Apply using kustomize (kubectl apply -k)
-	log.Printf("Applying manifests from: %s", otpDir)
+	logger.Info("applying manifests", "path", otpDir)
 	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-k", otpDir)
 	applyCmd.Stdout = os.Stdout
 	applyCmd.Stderr = os.Stderr
@@ -371,15 +362,15 @@ func (m *MinimalDeployer) DeployOTPServer(ctx context.Context) error {
 		return fmt.Errorf("failed to apply OTP server manifests: %w", err)
 	}
 
-	log.Println("OTP Server manifests applied")
-	log.Println("Note: OTP server will not be ready until Phase 5 builds and loads the image")
+	logger.Info("OTP Server manifests applied")
+	logger.Info("OTP server will not be ready until Phase 5 builds and loads the image")
 
 	// Verify the deployment was created (don't wait for ready - that needs the image from Phase 5)
 	if err := m.verifyOTPServerCreated(ctx); err != nil {
 		return fmt.Errorf("OTP server deployment not created: %w", err)
 	}
 
-	log.Println("✓ OTP Server manifests deployed successfully")
+	logger.Info("OTP Server manifests deployed successfully")
 	return nil
 }
 
@@ -391,11 +382,11 @@ func (m *MinimalDeployer) DeployOTPServer(ctx context.Context) error {
 //
 // The certificate is issued for the OTP service DNS name within the cluster.
 func (m *MinimalDeployer) createOTPTLSCertificate(ctx context.Context) error {
-	log.Println("Creating TLS certificate for OTP server...")
+	logger.Info("creating TLS certificate for OTP server")
 
 	// First, ensure the MPC namespace exists (cert-manager needs the namespace to exist
 	// before it can create the secret there)
-	log.Println("Ensuring multi-platform-controller namespace exists...")
+	logger.Info("ensuring multi-platform-controller namespace exists")
 	nsCmd := exec.CommandContext(ctx, "kubectl", "create", "namespace", mpcNamespace)
 	// Ignore error - namespace may already exist
 	_ = nsCmd.Run()
@@ -410,7 +401,7 @@ spec:
   selfSigned: {}
 `
 
-	log.Println("Creating self-signed ClusterIssuer...")
+	logger.Info("creating self-signed ClusterIssuer")
 	issuerCmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	issuerCmd.Stdin = strings.NewReader(clusterIssuerYAML)
 	issuerCmd.Stdout = os.Stdout
@@ -445,7 +436,7 @@ spec:
     - client auth
 `, mpcNamespace, mpcNamespace, mpcNamespace, mpcNamespace)
 
-	log.Println("Creating Certificate resource for OTP TLS...")
+	logger.Info("creating Certificate resource for OTP TLS")
 	certCmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	certCmd.Stdin = strings.NewReader(certificateYAML)
 	certCmd.Stdout = os.Stdout
@@ -460,14 +451,14 @@ spec:
 		return fmt.Errorf("certificate not ready: %w", err)
 	}
 
-	log.Println("✓ OTP TLS certificate created successfully")
+	logger.Info("OTP TLS certificate created successfully")
 	return nil
 }
 
 // waitForOTPCertificateReady waits for the OTP TLS certificate to be issued
 // and the secret to be created.
 func (m *MinimalDeployer) waitForOTPCertificateReady(ctx context.Context) error {
-	log.Println("Waiting for OTP TLS certificate to be ready...")
+	logger.Info("waiting for OTP TLS certificate to be ready")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -485,7 +476,7 @@ func (m *MinimalDeployer) waitForOTPCertificateReady(ctx context.Context) error 
 			cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "otp-tls-secrets",
 				"-n", mpcNamespace)
 			if err := cmd.Run(); err == nil {
-				log.Println("OTP TLS secret created successfully")
+				logger.Info("OTP TLS secret created successfully")
 				return nil
 			}
 		}
@@ -495,7 +486,7 @@ func (m *MinimalDeployer) waitForOTPCertificateReady(ctx context.Context) error 
 // verifyOTPServerCreated verifies that the OTP server deployment was created
 // (but doesn't wait for it to be ready - that happens in Phase 5)
 func (m *MinimalDeployer) verifyOTPServerCreated(ctx context.Context) error {
-	log.Println("Verifying OTP server deployment was created...")
+	logger.Info("verifying OTP server deployment was created")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -512,7 +503,7 @@ func (m *MinimalDeployer) verifyOTPServerCreated(ctx context.Context) error {
 			cmd := exec.CommandContext(ctx, "kubectl", "get", "deployment", otpDeploymentName,
 				"-n", mpcNamespace)
 			if err := cmd.Run(); err == nil {
-				log.Println("OTP server deployment created successfully")
+				logger.Info("OTP server deployment created successfully")
 				return nil
 			}
 		}

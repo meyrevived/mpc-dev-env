@@ -14,7 +14,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,34 +29,41 @@ import (
 	"github.com/meyrevived/mpc-dev-env/internal/daemon/api"
 	"github.com/meyrevived/mpc-dev-env/internal/daemon/git"
 	"github.com/meyrevived/mpc-dev-env/internal/daemon/state"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 )
 
 func main() {
-	log.Println("Starting MPC Dev Studio daemon...")
-
-	// Load configuration early in startup
-	log.Println("Loading configuration...")
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		// Can't use logger yet — it depends on config
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
 	}
-	log.Printf("Configuration loaded successfully:")
-	log.Printf("  MPC_REPO_PATH: %s", cfg.GetMpcRepoPath())
-	log.Printf("  MPC_DEV_ENV_PATH: %s", cfg.GetMpcDevEnvPath())
-	log.Printf("  TempDir: %s", cfg.GetTempDir())
+
+	if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
+		cfg.LogLevel = envLevel
+	}
+	logger.Init(cfg.LogLevel)
+
+	logger.Info("starting MPC Dev Studio daemon")
+	logger.Info("configuration loaded",
+		"mpcRepoPath", cfg.GetMpcRepoPath(),
+		"mpcDevEnvPath", cfg.GetMpcDevEnvPath(),
+		"tempDir", cfg.GetTempDir(),
+		"logLevel", cfg.LogLevel)
 
 	kubeconfigPath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 
 	// Step 1: Instantiate GitManager
-	log.Println("Initializing GitManager...")
+	logger.Info("initializing GitManager")
 	gitManager := git.NewGitManager()
 
 	// Step 2: Instantiate ClusterManager
-	log.Println("Initializing ClusterManager...")
+	logger.Info("initializing ClusterManager")
 	clusterManager := cluster.NewManager(cfg)
 
 	// Step 3: Instantiate StateManager
-	log.Println("Initializing StateManager...")
+	logger.Info("initializing StateManager")
 
 	// Configure repository paths using Config
 	repoPaths := map[string]string{
@@ -72,12 +79,13 @@ func main() {
 
 	stateManager, err := state.NewStateManager(stateManagerConfig)
 	if err != nil {
-		log.Fatalf("Failed to create StateManager: %v", err)
+		logger.Error(err, "failed to create StateManager")
+		os.Exit(1)
 	}
-	log.Println("StateManager initialized successfully")
+	logger.Info("StateManager initialized")
 
 	// Step 4: Instantiate API handlers and router
-	log.Println("Setting up API handlers and router...")
+	logger.Info("setting up API handlers and router")
 	handlers := api.NewHandlers(stateManager, cfg)
 	router := api.NewRouter(handlers)
 
@@ -89,9 +97,10 @@ func main() {
 
 	// Step 6: Start the server in a goroutine
 	go func() {
-		log.Printf("HTTP server listening on %s", server.Addr)
+		logger.Info("HTTP server listening", "addr", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
+			logger.Error(err, "server failed to start")
+			os.Exit(1)
 		}
 	}()
 
@@ -101,26 +110,26 @@ func main() {
 	defer syncTicker.Stop()
 
 	go func() {
-		log.Println("Starting background Git sync worker (every 60 minutes)...")
+		logger.Info("starting background Git sync worker", "interval", "60m")
 
 		// Perform initial sync on startup
 		for repoName, repoPath := range repoPaths {
-			log.Printf("Performing initial sync for repository: %s", repoName)
+			logger.Info("performing initial sync for repository", "repo", repoName)
 			if err := gitManager.Sync(repoPath); err != nil {
-				log.Printf("WARNING: Failed to sync repository %s: %v", repoName, err)
+				logger.Error(err, "failed to sync repository", "repo", repoName)
 			} else {
-				log.Printf("Successfully synced repository: %s", repoName)
+				logger.Info("synced repository", "repo", repoName)
 			}
 		}
 
 		// Periodic sync
 		for range syncTicker.C {
-			log.Println("Running periodic Git sync...")
+			logger.Info("running periodic Git sync")
 			for repoName, repoPath := range repoPaths {
 				if err := gitManager.Sync(repoPath); err != nil {
-					log.Printf("WARNING: Failed to sync repository %s: %v", repoName, err)
+					logger.Error(err, "failed to sync repository", "repo", repoName)
 				} else {
-					log.Printf("Successfully synced repository: %s", repoName)
+					logger.Info("synced repository", "repo", repoName)
 				}
 			}
 		}
@@ -128,10 +137,10 @@ func main() {
 
 	// Step 8: Start file watcher for hot reload (replaces detector.py)
 	// Watch the multi-platform-controller directory for changes
-	log.Println("Initializing file watcher for hot reload...")
+	logger.Info("initializing file watcher for hot reload")
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Printf("WARNING: Failed to create file watcher: %v", err)
+		logger.Error(err, "failed to create file watcher")
 	} else {
 		defer func() {
 			_ = watcher.Close()
@@ -139,9 +148,9 @@ func main() {
 
 		// Watch the MPC repository directory
 		if err := addRecursiveWatch(watcher, cfg.GetMpcRepoPath()); err != nil {
-			log.Printf("WARNING: Failed to add watch on %s: %v", cfg.GetMpcRepoPath(), err)
+			logger.Error(err, "failed to add watch", "path", cfg.GetMpcRepoPath())
 		} else {
-			log.Printf("File watcher active on: %s", cfg.GetMpcRepoPath())
+			logger.Info("file watcher active", "path", cfg.GetMpcRepoPath())
 
 			// Start file watcher goroutine with debouncing
 			go fileWatcherLoop(watcher, handlers, 2*time.Second)
@@ -155,7 +164,7 @@ func main() {
 
 	// Block until we receive a signal
 	sig := <-quit
-	log.Printf("Received signal: %v. Shutting down gracefully...", sig)
+	logger.Info("received signal, shutting down gracefully", "signal", sig)
 
 	// Create a context with timeout for the shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -163,12 +172,12 @@ func main() {
 
 	// Attempt to gracefully shutdown the server
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
+		logger.Error(err, "server forced to shutdown")
 	} else {
-		log.Println("Server shutdown complete")
+		logger.Info("server shutdown complete")
 	}
 
-	log.Println("MPC Dev Studio daemon stopped")
+	logger.Info("MPC Dev Studio daemon stopped")
 }
 
 // addRecursiveWatch adds a file system watcher recursively to all subdirectories
@@ -193,7 +202,7 @@ func addRecursiveWatch(watcher *fsnotify.Watcher, root string) error {
 
 			// Add watch on this directory
 			if err := watcher.Add(path); err != nil {
-				log.Printf("WARNING: Failed to watch directory %s: %v", path, err)
+				logger.Error(err, "failed to watch directory", "path", path)
 			}
 		}
 
@@ -211,13 +220,13 @@ func fileWatcherLoop(watcher *fsnotify.Watcher, handlers *api.Handlers, debounce
 	var debounceTimer *time.Timer
 	var lastChangeTime time.Time
 
-	log.Println("File watcher loop started (Hot Reload active)")
+	logger.Info("file watcher loop started (hot reload active)")
 
 	for {
 		select {
 		case event, ok := <-watcher.Events:
 			if !ok {
-				log.Println("File watcher events channel closed")
+				logger.Info("file watcher events channel closed")
 				return
 			}
 
@@ -238,17 +247,17 @@ func fileWatcherLoop(watcher *fsnotify.Watcher, handlers *api.Handlers, debounce
 			debounceTimer = time.AfterFunc(debounceDuration, func() {
 				// Check if enough time has passed since last change
 				if time.Since(lastChangeTime) >= debounceDuration {
-					log.Printf("File changes detected, triggering rebuild...")
+					logger.Info("file changes detected, triggering rebuild")
 					triggerRebuild(handlers)
 				}
 			})
 
 		case err, ok := <-watcher.Errors:
 			if !ok {
-				log.Println("File watcher errors channel closed")
+				logger.Info("file watcher errors channel closed")
 				return
 			}
-			log.Printf("File watcher error: %v", err)
+			logger.Error(err, "file watcher error")
 		}
 	}
 }
@@ -297,7 +306,7 @@ func triggerRebuild(handlers *api.Handlers) {
 	// operation (e.g., running a TaskRun), the transition fails and we skip the rebuild.
 	// Hot reload is a development convenience — it must never interrupt in-flight operations.
 	if ok, actual := handlers.StateManager.TrySetOperationStatus("idle", "rebuilding", nil); !ok {
-		log.Printf("Skipping hot-reload rebuild: daemon is busy (status: %s)", actual)
+		logger.Info("skipping hot-reload rebuild, daemon is busy", "status", actual)
 		return
 	}
 
@@ -305,15 +314,15 @@ func triggerRebuild(handlers *api.Handlers) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	log.Println("Starting rebuild (triggered by file watcher)...")
+	logger.Info("starting rebuild (triggered by file watcher)")
 
 	// Execute native Go build
 	if err := build.BuildMPCImage(ctx, handlers.Config); err != nil {
-		log.Printf("ERROR: Rebuild failed: %v", err)
+		logger.Error(err, "rebuild failed")
 		handlers.StateManager.SetOperationStatus("idle", err)
 		return
 	}
 
-	log.Println("Rebuild completed successfully")
+	logger.Info("rebuild completed successfully")
 	handlers.StateManager.SetOperationStatus("idle", nil)
 }
