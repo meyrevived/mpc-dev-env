@@ -12,11 +12,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 
 	"github.com/meyrevived/mpc-dev-env/internal/config"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 )
 
 // Manager handles Kind cluster lifecycle operations (create, destroy, status).
@@ -48,7 +48,7 @@ func NewManager(cfg *config.Config) *Manager {
 // Returns:
 //   - error: An error if cluster creation fails, nil otherwise
 func (m *Manager) Create(ctx context.Context) error {
-	log.Println("Creating Kind cluster...")
+	logger.Info("creating kind cluster")
 
 	clusterName := "konflux"
 
@@ -61,7 +61,7 @@ func (m *Manager) Create(ctx context.Context) error {
 
 	// Build full command string with environment variable
 	cmdStr := "KIND_EXPERIMENTAL_PROVIDER=podman kind " + strings.Join(args, " ")
-	log.Printf("Executing: %s", cmdStr)
+	logger.Info("executing command", "command", cmdStr)
 
 	// Execute via bash -c to ensure proper environment and resource limits
 	// This avoids issues with cgroup/systemd limits when run from daemon
@@ -72,14 +72,14 @@ func (m *Manager) Create(ctx context.Context) error {
 
 	// Log the output regardless of success/failure
 	if len(output) > 0 {
-		log.Printf("kind create output:\n%s", string(output))
+		logger.Debug("kind create output", "output", string(output))
 	}
 
 	if err != nil {
 		return fmt.Errorf("failed to create Kind cluster: %w (output: %s)", err, string(output))
 	}
 
-	log.Println("Kind cluster created successfully")
+	logger.Info("kind cluster created successfully")
 	return nil
 }
 
@@ -93,7 +93,7 @@ func (m *Manager) Create(ctx context.Context) error {
 // Returns:
 //   - error: An error if cluster deletion fails (except for "cluster not found"), nil otherwise
 func (m *Manager) Destroy(ctx context.Context) error {
-	log.Println("Destroying Kind cluster...")
+	logger.Info("destroying kind cluster")
 
 	clusterName := "konflux"
 
@@ -102,7 +102,7 @@ func (m *Manager) Destroy(ctx context.Context) error {
 
 	// Build full command string with environment variable
 	cmdStr := "KIND_EXPERIMENTAL_PROVIDER=podman kind " + strings.Join(args, " ")
-	log.Printf("Executing: %s", cmdStr)
+	logger.Info("executing command", "command", cmdStr)
 
 	// Execute via bash -c
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
@@ -117,10 +117,10 @@ func (m *Manager) Destroy(ctx context.Context) error {
 
 	// Log the output
 	if stdout.Len() > 0 {
-		log.Printf("kind delete stdout:\n%s", stdout.String())
+		logger.Debug("kind delete stdout", "output", stdout.String())
 	}
 	if stderr.Len() > 0 {
-		log.Printf("kind delete stderr:\n%s", stderr.String())
+		logger.Debug("kind delete stderr", "output", stderr.String())
 	}
 
 	if err != nil {
@@ -128,13 +128,13 @@ func (m *Manager) Destroy(ctx context.Context) error {
 		// kind returns a non-zero exit code if the cluster is not found
 		stderrStr := stderr.String()
 		if strings.Contains(stderrStr, "not found") || strings.Contains(stderrStr, "No kind clusters found") {
-			log.Println("Cluster does not exist (already deleted or never created)")
+			logger.Info("cluster does not exist")
 			return nil
 		}
 		return fmt.Errorf("failed to delete Kind cluster: %w (stderr: %s)", err, stderrStr)
 	}
 
-	log.Println("Kind cluster destroyed successfully")
+	logger.Info("kind cluster destroyed successfully")
 	return nil
 }
 
@@ -148,7 +148,7 @@ func (m *Manager) Destroy(ctx context.Context) error {
 //   - string: One of "Running", "Not Running", or "Error"
 //   - error: An error if the status check fails, nil otherwise
 func (m *Manager) Status(ctx context.Context) (string, error) {
-	log.Println("Checking Kind cluster status...")
+	logger.Info("checking kind cluster status")
 
 	clusterName := "konflux"
 
@@ -166,22 +166,22 @@ func (m *Manager) Status(ctx context.Context) (string, error) {
 
 	// Log the output
 	if stdout.Len() > 0 {
-		log.Printf("kind get clusters stdout:\n%s", stdout.String())
+		logger.Debug("kind get clusters stdout", "output", stdout.String())
 	}
 	if stderr.Len() > 0 {
-		log.Printf("kind get clusters stderr:\n%s", stderr.String())
+		logger.Debug("kind get clusters stderr", "output", stderr.String())
 	}
 
 	if err != nil {
 		// If kind command fails, return Error status
-		log.Printf("Failed to get cluster status: %v", err)
+		logger.Error(err, "failed to get cluster status")
 		return "Error", fmt.Errorf("failed to get cluster status: %w", err)
 	}
 
 	// Parse the output to check if our cluster exists
 	clusters := strings.TrimSpace(stdout.String())
 	if clusters == "" {
-		log.Println("No Kind clusters found")
+		logger.Info("no kind clusters found")
 		return "Not Running", nil
 	}
 
@@ -195,22 +195,22 @@ func (m *Manager) Status(ctx context.Context) (string, error) {
 	}
 
 	if !clusterExists {
-		log.Printf("Cluster '%s' not found", clusterName)
+		logger.Info("cluster not found", "name", clusterName)
 		return "Not Running", nil
 	}
 
 	// Cluster exists, but we need to verify kubectl can access it
 	// This ensures the cluster is fully initialized and ready
-	log.Printf("Cluster '%s' found, verifying kubectl accessibility...", clusterName)
+	logger.Info("cluster found, verifying kubectl accessibility", "name", clusterName)
 	kubectlCmd := exec.CommandContext(ctx, "kubectl", "cluster-info", "--context", "kind-"+clusterName)
 	kubectlCmd.Stdout = &bytes.Buffer{}
 	kubectlCmd.Stderr = &bytes.Buffer{}
 
 	if err := kubectlCmd.Run(); err != nil {
-		log.Printf("Cluster '%s' exists but kubectl cannot access it yet (still initializing)", clusterName)
+		logger.Info("cluster exists but kubectl cannot access it yet", "name", clusterName)
 		return "Initializing", nil
 	}
 
-	log.Printf("Cluster '%s' is running and accessible via kubectl", clusterName)
+	logger.Info("cluster is running and accessible via kubectl", "name", clusterName)
 	return "Running", nil
 }

@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +29,7 @@ import (
 	"github.com/meyrevived/mpc-dev-env/internal/deploy"
 	"github.com/meyrevived/mpc-dev-env/internal/git"
 	"github.com/meyrevived/mpc-dev-env/internal/logcollector"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 	"github.com/meyrevived/mpc-dev-env/internal/prereq"
 	"github.com/meyrevived/mpc-dev-env/internal/taskrun"
 )
@@ -113,7 +113,7 @@ func (h *Handlers) RebuildHandler(w http.ResponseWriter, r *http.Request) {
 			"error":  "A rebuild operation is already in progress",
 		}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
+			logger.Error(err, "failed to encode response")
 		}
 		return
 	}
@@ -128,7 +128,7 @@ func (h *Handlers) RebuildHandler(w http.ResponseWriter, r *http.Request) {
 		// Ensure we unlock the mutex when the goroutine completes
 		defer h.opMutex.Unlock()
 
-		log.Println("Starting background rebuild...")
+		logger.Info("starting background rebuild")
 
 		// Create context with timeout (builds can take several minutes)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -136,13 +136,13 @@ func (h *Handlers) RebuildHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Call the native Go build function
 		if err := build.BuildMPCImage(ctx, h.Config); err != nil {
-			log.Printf("ERROR: Background rebuild failed: %v", err)
+			logger.Error(err, "background rebuild failed")
 
 			// Update state to idle with error message
 			h.StateManager.SetOperationStatus("idle", err)
 			return
 		}
-		log.Println("Background rebuild completed successfully.")
+		logger.Info("background rebuild completed successfully")
 
 		// Update state to idle with no error
 		h.StateManager.SetOperationStatus("idle", nil)
@@ -183,7 +183,7 @@ func (h *Handlers) SmokeTestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -207,7 +207,7 @@ func (h *Handlers) DeployMetricsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -252,7 +252,7 @@ func (h *Handlers) EnableFeatureHandler(w http.ResponseWriter, r *http.Request) 
 	// Execute the feature enablement asynchronously using native Go
 	//nolint:contextcheck // Using Background context intentionally - request context would cancel when response is sent
 	go func() {
-		log.Printf("Enabling feature: %s", req.FeatureName)
+		logger.Info("enabling feature", "feature", req.FeatureName)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
@@ -265,7 +265,7 @@ func (h *Handlers) EnableFeatureHandler(w http.ResponseWriter, r *http.Request) 
 		// Use the native Go secrets deployment
 		deployManager := deploy.NewManager(h.Config)
 		if err := deployManager.ApplySecrets(ctx); err != nil {
-			log.Printf("ERROR: Feature enablement failed for %s: %v", req.FeatureName, err)
+			logger.Error(err, "feature enablement failed", "feature", req.FeatureName)
 			// Clear environment variables on failure
 			for key := range req.Credentials {
 				_ = os.Unsetenv(key)
@@ -273,7 +273,7 @@ func (h *Handlers) EnableFeatureHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		log.Printf("Feature %s enabled successfully", req.FeatureName)
+		logger.Info("feature enabled successfully", "feature", req.FeatureName)
 
 		// Clear environment variables after successful deployment for security
 		for key := range req.Credentials {
@@ -291,7 +291,7 @@ func (h *Handlers) EnableFeatureHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -375,15 +375,15 @@ func (h *Handlers) ClusterStartHandler(w http.ResponseWriter, r *http.Request) {
 	// Execute cluster creation asynchronously in a goroutine
 	//nolint:contextcheck // Using Background context intentionally - request context would cancel when response is sent
 	go func() {
-		log.Println("Starting cluster creation...")
+		logger.Info("starting cluster creation")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
 		if err := h.ClusterManager.Create(ctx); err != nil {
-			log.Printf("ERROR: Cluster creation failed: %v", err)
+			logger.Error(err, "cluster creation failed")
 			return
 		}
-		log.Println("Cluster created successfully")
+		logger.Info("cluster created successfully")
 	}()
 
 	// Immediately return 202 Accepted
@@ -396,7 +396,7 @@ func (h *Handlers) ClusterStartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -412,15 +412,15 @@ func (h *Handlers) ClusterStopHandler(w http.ResponseWriter, r *http.Request) {
 	// Execute cluster destruction asynchronously in a goroutine
 	//nolint:contextcheck // Using Background context intentionally - request context would cancel when response is sent
 	go func() {
-		log.Println("Starting cluster destruction...")
+		logger.Info("starting cluster destruction")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
 		if err := h.ClusterManager.Destroy(ctx); err != nil {
-			log.Printf("ERROR: Cluster destruction failed: %v", err)
+			logger.Error(err, "cluster destruction failed")
 			return
 		}
-		log.Println("Cluster destroyed successfully")
+		logger.Info("cluster destroyed successfully")
 	}()
 
 	// Immediately return 202 Accepted
@@ -433,7 +433,7 @@ func (h *Handlers) ClusterStopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -456,7 +456,7 @@ func (h *Handlers) BuildHandler(w http.ResponseWriter, r *http.Request) {
 			"error":  "A build or rebuild operation is already in progress",
 		}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
+			logger.Error(err, "failed to encode response")
 		}
 		return
 	}
@@ -467,7 +467,7 @@ func (h *Handlers) BuildHandler(w http.ResponseWriter, r *http.Request) {
 		// Ensure we unlock the mutex when the goroutine completes
 		defer h.opMutex.Unlock()
 
-		log.Println("Starting MPC image build...")
+		logger.Info("starting MPC image build")
 
 		// Create context with timeout (builds can take several minutes)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -475,11 +475,11 @@ func (h *Handlers) BuildHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Call the build function
 		if err := build.BuildMPCImage(ctx, h.Config); err != nil {
-			log.Printf("ERROR: MPC image build failed: %v", err)
+			logger.Error(err, "MPC image build failed")
 			return
 		}
 
-		log.Println("MPC image build completed successfully")
+		logger.Info("MPC image build completed successfully")
 	}()
 
 	// Immediately return 202 Accepted
@@ -492,7 +492,7 @@ func (h *Handlers) BuildHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -515,7 +515,7 @@ func (h *Handlers) DeployHandler(w http.ResponseWriter, r *http.Request) {
 			"error":  "A build, rebuild, or deployment operation is already in progress",
 		}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
+			logger.Error(err, "failed to encode response")
 		}
 		return
 	}
@@ -529,7 +529,7 @@ func (h *Handlers) DeployHandler(w http.ResponseWriter, r *http.Request) {
 		// Set operation status to "deploying_mpc" at the start
 		h.StateManager.SetOperationStatus("deploying_mpc", nil)
 
-		log.Println("Starting MPC deployment...")
+		logger.Info("starting MPC deployment")
 
 		// Create context with timeout (deployments can take several minutes)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -537,12 +537,12 @@ func (h *Handlers) DeployHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Call the deploy function
 		if err := deploy.DeployMPC(ctx, h.Config); err != nil {
-			log.Printf("ERROR: MPC deployment failed: %v", err)
+			logger.Error(err, "MPC deployment failed")
 			h.StateManager.SetOperationStatus("idle", err)
 			return
 		}
 
-		log.Println("MPC deployment completed successfully")
+		logger.Info("MPC deployment completed successfully")
 		h.StateManager.SetOperationStatus("idle", nil)
 	}()
 
@@ -556,7 +556,7 @@ func (h *Handlers) DeployHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -580,7 +580,7 @@ func (h *Handlers) RebuildAndRedeployHandler(w http.ResponseWriter, r *http.Requ
 			"error":  "A build, rebuild, or deployment operation is already in progress",
 		}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
+			logger.Error(err, "failed to encode response")
 		}
 		return
 	}
@@ -594,31 +594,31 @@ func (h *Handlers) RebuildAndRedeployHandler(w http.ResponseWriter, r *http.Requ
 		// Set operation status to "rebuilding_and_redeploying" at the start
 		h.StateManager.SetOperationStatus("rebuilding_and_redeploying", nil)
 
-		log.Println("Starting rebuild-and-redeploy orchestration...")
+		logger.Info("starting rebuild-and-redeploy orchestration")
 
 		// Create context with timeout (both operations can take time)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 
 		// Step 1: Build the MPC image
-		log.Println("[Orchestration] Step 1/2: Building MPC image...")
+		logger.Info("orchestration step 1/2: building MPC image")
 		if err := build.BuildMPCImage(ctx, h.Config); err != nil {
-			log.Printf("ERROR: Rebuild-and-redeploy failed during build: %v", err)
+			logger.Error(err, "rebuild-and-redeploy failed during build")
 			h.StateManager.SetOperationStatus("idle", err)
 			return
 		}
-		log.Println("[Orchestration] Build completed successfully")
+		logger.Info("orchestration build completed successfully")
 
 		// Step 2: Deploy the MPC to the cluster
-		log.Println("[Orchestration] Step 2/2: Deploying MPC to cluster...")
+		logger.Info("orchestration step 2/2: deploying MPC to cluster")
 		if err := deploy.DeployMPC(ctx, h.Config); err != nil {
-			log.Printf("ERROR: Rebuild-and-redeploy failed during deploy: %v", err)
+			logger.Error(err, "rebuild-and-redeploy failed during deploy")
 			h.StateManager.SetOperationStatus("idle", err)
 			return
 		}
-		log.Println("[Orchestration] Deploy completed successfully")
+		logger.Info("orchestration deploy completed successfully")
 
-		log.Println("Rebuild-and-redeploy orchestration completed successfully!")
+		logger.Info("rebuild-and-redeploy orchestration completed successfully")
 
 		// Set operation status back to idle (no error)
 		h.StateManager.SetOperationStatus("idle", nil)
@@ -634,7 +634,7 @@ func (h *Handlers) RebuildAndRedeployHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -651,7 +651,7 @@ func (h *Handlers) GitSyncHandler(w http.ResponseWriter, r *http.Request) {
 	// Execute Git sync asynchronously in a goroutine
 	//nolint:contextcheck // Using Background context intentionally - request context would cancel when response is sent
 	go func() {
-		log.Println("Starting Git repository synchronization...")
+		logger.Info("starting git repository synchronization")
 
 		// Create context with timeout (sync operations can take time)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -662,11 +662,11 @@ func (h *Handlers) GitSyncHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Synchronize all repositories
 		if err := syncer.SyncAllRepos(ctx); err != nil {
-			log.Printf("ERROR: Git synchronization failed: %v", err)
+			logger.Error(err, "git synchronization failed")
 			return
 		}
 
-		log.Println("Git repository synchronization completed successfully")
+		logger.Info("git repository synchronization completed successfully")
 	}()
 
 	// Immediately return 202 Accepted
@@ -679,7 +679,7 @@ func (h *Handlers) GitSyncHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -726,7 +726,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 		// Set operation status to "deploying_secrets" at the start
 		h.StateManager.SetOperationStatus("deploying_secrets", nil)
 
-		log.Println("Starting AWS secrets deployment...")
+		logger.Info("starting AWS secrets deployment")
 
 		// Create context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -741,7 +741,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 		// Create deployment manager and apply secrets
 		deployManager := deploy.NewManager(h.Config)
 		if err := deployManager.ApplySecrets(ctx); err != nil {
-			log.Printf("ERROR: Secrets deployment failed: %v", err)
+			logger.Error(err, "secrets deployment failed")
 			h.StateManager.SetOperationStatus("idle", err)
 			// Clear environment variables on failure
 			_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -751,7 +751,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		log.Println("AWS secrets deployment completed successfully")
+		logger.Info("AWS secrets deployment completed successfully")
 
 		// Clear environment variables after successful deployment for security
 		_ = os.Unsetenv("AWS_ACCESS_KEY_ID")
@@ -773,7 +773,7 @@ func (h *Handlers) DeploySecretsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -793,7 +793,7 @@ func (h *Handlers) DeployKonfluxHandler(w http.ResponseWriter, r *http.Request) 
 		// Set operation status to "deploying_konflux" at the start
 		h.StateManager.SetOperationStatus("deploying_konflux", nil)
 
-		log.Println("Starting Konflux deployment...")
+		logger.Info("starting Konflux deployment")
 
 		// Create context with timeout (Konflux deployment can take 20+ minutes)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -802,12 +802,12 @@ func (h *Handlers) DeployKonfluxHandler(w http.ResponseWriter, r *http.Request) 
 		// Create deployment manager and apply Konflux
 		deployManager := deploy.NewManager(h.Config)
 		if err := deployManager.ApplyKonflux(ctx); err != nil {
-			log.Printf("ERROR: Konflux deployment failed: %v", err)
+			logger.Error(err, "Konflux deployment failed")
 			h.StateManager.SetOperationStatus("idle", err)
 			return
 		}
 
-		log.Println("Konflux deployment completed successfully")
+		logger.Info("Konflux deployment completed successfully")
 
 		// Set operation status back to idle (no error)
 		h.StateManager.SetOperationStatus("idle", nil)
@@ -823,7 +823,7 @@ func (h *Handlers) DeployKonfluxHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -843,7 +843,7 @@ func (h *Handlers) DeployMinimalStackHandler(w http.ResponseWriter, r *http.Requ
 		// Set operation status to "deploying_minimal_stack" at the start
 		h.StateManager.SetOperationStatus("deploying_minimal_stack", nil)
 
-		log.Println("Starting minimal MPC stack deployment...")
+		logger.Info("starting minimal MPC stack deployment")
 
 		// Create context with timeout (minimal deployment should be fast, ~5 minutes)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -852,12 +852,12 @@ func (h *Handlers) DeployMinimalStackHandler(w http.ResponseWriter, r *http.Requ
 		// Create minimal deployer and deploy the stack
 		minimalDeployer := deploy.NewMinimalDeployer(h.Config)
 		if err := minimalDeployer.DeployMinimalStack(ctx); err != nil {
-			log.Printf("ERROR: Minimal stack deployment failed: %v", err)
+			logger.Error(err, "minimal stack deployment failed")
 			h.StateManager.SetOperationStatus("idle", err)
 			return
 		}
 
-		log.Println("Minimal stack deployment completed successfully")
+		logger.Info("minimal stack deployment completed successfully")
 
 		// Set operation status back to idle (no error)
 		h.StateManager.SetOperationStatus("idle", nil)
@@ -873,7 +873,7 @@ func (h *Handlers) DeployMinimalStackHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -922,7 +922,7 @@ func (h *Handlers) TaskRunRunHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }
 
@@ -947,7 +947,7 @@ func (h *Handlers) runTaskRunWorkflow(ctx context.Context, yamlPath string) {
 
 	// Ensure session log directory exists
 	if err := os.MkdirAll(h.Config.GetSessionLogDir(), 0750); err != nil {
-		log.Printf("ERROR: Failed to create session log directory: %v", err)
+		logger.Error(err, "failed to create session log directory")
 		h.StateManager.SetOperationStatus("idle", err)
 		h.StateManager.SetTaskRunInfo(&state.TaskRunInfo{
 			Status: "Error",
@@ -959,25 +959,25 @@ func (h *Handlers) runTaskRunWorkflow(ctx context.Context, yamlPath string) {
 	mgr, err := taskrun.NewManager()
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create TaskRun manager: %w", err)
-		log.Printf("ERROR: %v", errMsg)
+		logger.Error(errMsg, "failed to create TaskRun manager")
 		h.StateManager.SetOperationStatus("idle", errMsg)
 		return
 	}
 
 	// Run the workflow
-	log.Printf("Starting TaskRun workflow for: %s", yamlPath)
+	logger.Info("starting TaskRun workflow", "yamlPath", yamlPath)
 	name, status, err := mgr.RunTaskRunWorkflow(ctx, yamlPath, logPath)
 
 	// Update state with results
 	if err != nil {
 		errMsg := fmt.Errorf("TaskRun workflow failed: %w", err)
-		log.Printf("ERROR: %v", errMsg)
+		logger.Error(errMsg, "TaskRun workflow failed")
 		h.StateManager.SetOperationStatus("idle", errMsg)
 		return
 	}
 
 	// Success - store TaskRun info
-	log.Printf("TaskRun workflow completed: name=%s, status=%s", name, status)
+	logger.Info("TaskRun workflow completed", "name", name, "status", status)
 	h.StateManager.SetOperationStatus("idle", nil)
 	h.StateManager.SetTaskRunInfo(&state.TaskRunInfo{
 		Name:      name,
@@ -1019,12 +1019,12 @@ func (h *Handlers) CollectLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	collector, err := logcollector.NewCollector(sessionDir)
 	if err != nil {
-		log.Printf("ERROR: Failed to create log collector: %v", err)
+		logger.Error(err, "failed to create log collector")
 		response := map[string]string{"status": "error", "message": err.Error()}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
+			logger.Error(err, "failed to encode response")
 		}
 		return
 	}
@@ -1038,6 +1038,6 @@ func (h *Handlers) CollectLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		logger.Error(err, "failed to encode response")
 	}
 }

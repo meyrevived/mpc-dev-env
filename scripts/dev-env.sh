@@ -69,8 +69,10 @@ export SESSION_LOG_DIR="$SESSION_DIR"
 
 # Capture script output to session log (inside latest/ so it participates in rotation)
 SESSION_LOG="${SESSION_DIR}/${SESSION_TYPE}_session_${SESSION_TIMESTAMP}.log"
-exec > >(tee -a "$SESSION_LOG") 2>&1
+SESSION_ERROR_LOG="${SESSION_DIR}/${SESSION_TYPE}_session_error_${SESSION_TIMESTAMP}.log"
+exec > >(tee -a "$SESSION_LOG") 2> >(tee -a "$SESSION_ERROR_LOG" >&2)
 echo "Session log: $SESSION_LOG"
+echo "Session error log: $SESSION_ERROR_LOG"
 echo "Session directory: $SESSION_DIR"
 
 # Additional color codes for dev-env specific logging (COLOR_RESET comes from utils.sh)
@@ -303,6 +305,7 @@ phase2_daemon_startup() {
     local daemon_binary="${MPC_DEV_ENV_PATH}/bin/mpc-daemon"
     local daemon_pid_file="${MPC_DEV_ENV_PATH}/daemon.pid"
     local daemon_log_file="${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
+    local daemon_error_log_file="${SESSION_DIR}/daemon_error_${SESSION_TIMESTAMP}.log"
 
     # Ensure session directory exists
     mkdir -p "${SESSION_DIR}"
@@ -319,13 +322,14 @@ phase2_daemon_startup() {
 
     # Start daemon in background
     log INFO "Starting daemon in background..."
-    nohup "$daemon_binary" >> "$daemon_log_file" 2>&1 &
+    nohup "$daemon_binary" >> "$daemon_log_file" 2>> "$daemon_error_log_file" &
     local daemon_pid=$!
 
     # Save PID to file
     echo "$daemon_pid" > "$daemon_pid_file"
     log INFO "Daemon started with PID: $daemon_pid"
     log INFO "Daemon logs: $daemon_log_file"
+    log INFO "Daemon error logs: $daemon_error_log_file"
 
     # Wait for daemon to be ready
     if ! daemon_wait_ready 120; then

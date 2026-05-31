@@ -13,11 +13,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 
 	"github.com/meyrevived/mpc-dev-env/internal/config"
+	"github.com/meyrevived/mpc-dev-env/internal/logger"
 )
 
 // Syncer provides Git synchronization functionality for repositories.
@@ -58,21 +58,21 @@ func NewSyncer(cfg *config.Config) *Syncer {
 //
 //	An error if synchronization fails
 func (s *Syncer) SyncRepo(ctx context.Context, repoPath string) error {
-	log.Printf("[Git Sync] Starting synchronization for: %s", repoPath)
+	logger.Info("starting synchronization", "path", repoPath)
 
 	// Step 1: Get current branch
 	currentBranch, err := s.getCurrentBranch(ctx, repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to get current branch: %w", err)
 	}
-	log.Printf("[Git Sync] Current branch: %s", currentBranch)
+	logger.Info("current branch", "branch", currentBranch)
 
 	// Step 2: Fetch from origin
-	log.Printf("[Git Sync] Fetching from origin...")
+	logger.Info("fetching from origin")
 	if err := s.fetchOrigin(ctx, repoPath); err != nil {
 		return fmt.Errorf("failed to fetch from origin: %w", err)
 	}
-	log.Printf("[Git Sync] Fetch completed successfully")
+	logger.Info("fetch completed successfully")
 
 	// Step 3: Check for local changes
 	hasLocalChanges, err := s.hasLocalChanges(ctx, repoPath)
@@ -81,28 +81,28 @@ func (s *Syncer) SyncRepo(ctx context.Context, repoPath string) error {
 	}
 
 	if hasLocalChanges {
-		log.Printf("[Git Sync] WARNING: Repository has local changes, using hard reset strategy")
+		logger.Info("repository has local changes, using hard reset strategy")
 		// Use git reset --hard to forcefully sync with upstream
 		if err := s.resetHard(ctx, repoPath, currentBranch); err != nil {
 			return fmt.Errorf("failed to reset repository: %w", err)
 		}
-		log.Printf("[Git Sync] Repository reset to origin/%s", currentBranch)
+		logger.Info("repository reset to origin", "branch", currentBranch)
 	} else {
 		// Step 4: Try fast-forward merge
-		log.Printf("[Git Sync] Attempting fast-forward merge...")
+		logger.Info("attempting fast-forward merge")
 		if err := s.fastForwardMerge(ctx, repoPath, currentBranch); err != nil {
 			// If fast-forward fails, use reset --hard as fallback
-			log.Printf("[Git Sync] Fast-forward merge failed, falling back to hard reset")
+			logger.Info("fast-forward merge failed, falling back to hard reset")
 			if err := s.resetHard(ctx, repoPath, currentBranch); err != nil {
 				return fmt.Errorf("failed to reset repository after merge failure: %w", err)
 			}
-			log.Printf("[Git Sync] Repository reset to origin/%s", currentBranch)
+			logger.Info("repository reset to origin", "branch", currentBranch)
 		} else {
-			log.Printf("[Git Sync] Fast-forward merge completed successfully")
+			logger.Info("fast-forward merge completed successfully")
 		}
 	}
 
-	log.Printf("[Git Sync] Synchronization completed successfully for: %s", repoPath)
+	logger.Info("synchronization completed successfully", "path", repoPath)
 	return nil
 }
 
@@ -117,7 +117,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repoPath string) error {
 //
 //	An error if any synchronization fails
 func (s *Syncer) SyncAllRepos(ctx context.Context) error {
-	log.Println("[Git Sync] Starting synchronization for all repositories...")
+	logger.Info("starting synchronization for all repositories")
 
 	repos := []struct {
 		name string
@@ -128,13 +128,13 @@ func (s *Syncer) SyncAllRepos(ctx context.Context) error {
 
 	var syncErrors []string
 	for _, repo := range repos {
-		log.Printf("[Git Sync] Syncing repository: %s", repo.name)
+		logger.Info("syncing repository", "name", repo.name)
 		if err := s.SyncRepo(ctx, repo.path); err != nil {
 			errMsg := fmt.Sprintf("%s: %v", repo.name, err)
 			syncErrors = append(syncErrors, errMsg)
-			log.Printf("[Git Sync] ERROR: Failed to sync %s: %v", repo.name, err)
+			logger.Error(err, "failed to sync repository", "name", repo.name)
 		} else {
-			log.Printf("[Git Sync] Successfully synced: %s", repo.name)
+			logger.Info("successfully synced repository", "name", repo.name)
 		}
 	}
 
@@ -142,7 +142,7 @@ func (s *Syncer) SyncAllRepos(ctx context.Context) error {
 		return fmt.Errorf("failed to sync repositories: %s", strings.Join(syncErrors, "; "))
 	}
 
-	log.Println("[Git Sync] All repositories synchronized successfully")
+	logger.Info("all repositories synchronized successfully")
 	return nil
 }
 
@@ -184,10 +184,10 @@ func (s *Syncer) fetchOrigin(ctx context.Context, repoPath string) error {
 
 	// Log the fetch output for visibility
 	if out := stdout.String(); out != "" {
-		log.Printf("[Git Sync] Fetch stdout: %s", out)
+		logger.Debug("fetch stdout", "output", out)
 	}
 	if errOut := stderr.String(); errOut != "" {
-		log.Printf("[Git Sync] Fetch stderr: %s", errOut)
+		logger.Debug("fetch stderr", "output", errOut)
 	}
 
 	return nil
@@ -227,7 +227,7 @@ func (s *Syncer) fastForwardMerge(ctx context.Context, repoPath, branch string) 
 
 	// Log the merge output
 	if out := stdout.String(); out != "" {
-		log.Printf("[Git Sync] Merge stdout: %s", out)
+		logger.Debug("merge stdout", "output", out)
 	}
 
 	return nil
@@ -255,7 +255,7 @@ func (s *Syncer) resetHard(ctx context.Context, repoPath, branch string) error {
 
 	// Log the reset output
 	if out := stdout.String(); out != "" {
-		log.Printf("[Git Sync] Reset stdout: %s", out)
+		logger.Debug("reset stdout", "output", out)
 	}
 
 	// Remove untracked files and directories
@@ -273,7 +273,7 @@ func (s *Syncer) resetHard(ctx context.Context, repoPath, branch string) error {
 
 	// Log the clean output if any files were removed
 	if out := cleanStdout.String(); out != "" {
-		log.Printf("[Git Sync] Clean stdout: %s", out)
+		logger.Debug("clean stdout", "output", out)
 	}
 
 	return nil

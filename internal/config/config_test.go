@@ -34,6 +34,7 @@ var _ = Describe("Config", func() {
 		_ = os.RemoveAll(tempDir)
 		_ = os.Unsetenv("MPC_DEV_ENV_PATH")
 		_ = os.Unsetenv("MPC_REPO_PATH")
+		_ = os.Unsetenv("LOG_LEVEL")
 	})
 
 	Describe("LoadConfig", func() {
@@ -97,6 +98,30 @@ var _ = Describe("Config", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("configuration validation failed"))
 				Expect(err.Error()).To(ContainSubstring("MPC_REPO_PATH does not exist"))
+			})
+		})
+
+		Context("with LOG_LEVEL set", func() {
+			It("should load the log level from environment", func() {
+				_ = os.Setenv("MPC_DEV_ENV_PATH", mpcDevEnvPath)
+				_ = os.Setenv("MPC_REPO_PATH", mpcRepoPath)
+				_ = os.Setenv("LOG_LEVEL", "debug")
+
+				cfg, err := LoadConfig()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.LogLevel).To(Equal("debug"))
+			})
+		})
+
+		Context("without LOG_LEVEL set", func() {
+			It("should default to info", func() {
+				_ = os.Setenv("MPC_DEV_ENV_PATH", mpcDevEnvPath)
+				_ = os.Setenv("MPC_REPO_PATH", mpcRepoPath)
+				_ = os.Unsetenv("LOG_LEVEL")
+
+				cfg, err := LoadConfig()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.LogLevel).To(Equal("info"))
 			})
 		})
 	})

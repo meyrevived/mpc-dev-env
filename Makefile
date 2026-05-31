@@ -48,14 +48,10 @@ help:
 	@echo "  make test-e2e-windows   - Run e2e test for windows/c4xlarge-amd64"
 	@echo "  make lint               - Run golangci-lint (if installed)"
 	@echo ""
-#	@echo "Plugin Development:"
-#	@echo "  make plugin         - Build the GoLand plugin"
-#	@echo "  make plugin-run     - Run the plugin in sandbox IDE"
-#	@echo "  make plugin -clean   - Clean plugin build artifacts"
-#	@echo ""
 	@echo "Cleanup & Maintenance:"
 	@echo "  make clean          - Remove build artifacts"
 	@echo "  make clean-all      - Remove all generated files"
+	@echo "  make clean-logs     - Remove log files (preserves logs/latest/ structure)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make fmt            - Format Go code"
@@ -209,6 +205,13 @@ clean-all: clean plugin-clean
 	fi
 	@echo ""
 	@echo "✓ All clean complete"
+
+# Clean log files and directories
+clean-logs:
+	@echo "Cleaning logs..."
+	@find logs/ -mindepth 1 -maxdepth 1 ! -name 'latest' -exec rm -rf {} +
+	@rm -f logs/latest/*
+	@echo "Logs cleaned. logs/latest/ preserved (empty)."
 
 # Build the GoLand plugin
 plugin:

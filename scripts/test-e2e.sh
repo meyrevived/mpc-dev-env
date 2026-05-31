@@ -73,8 +73,10 @@ mkdir -p "$SESSION_DIR"
 export SESSION_LOG_DIR="$SESSION_DIR"
 
 SESSION_LOG="${SESSION_DIR}/${SESSION_TYPE}_session_${SESSION_TIMESTAMP}.log"
-exec > >(tee -a "$SESSION_LOG") 2>&1
+SESSION_ERROR_LOG="${SESSION_DIR}/${SESSION_TYPE}_session_error_${SESSION_TIMESTAMP}.log"
+exec > >(tee -a "$SESSION_LOG") 2> >(tee -a "$SESSION_ERROR_LOG" >&2)
 echo "Session log: $SESSION_LOG"
+echo "Session error log: $SESSION_ERROR_LOG"
 echo "Session directory: $SESSION_DIR"
 
 # ============================================================================
@@ -196,6 +198,7 @@ log_info "Starting daemon..."
 
 DAEMON_PID_FILE="${MPC_DEV_ENV_PATH}/daemon.pid"
 DAEMON_LOG_FILE="${SESSION_DIR}/daemon_${SESSION_TIMESTAMP}.log"
+DAEMON_ERROR_LOG_FILE="${SESSION_DIR}/daemon_error_${SESSION_TIMESTAMP}.log"
 
 # Kill any lingering daemon
 if lsof -ti :8765 >/dev/null 2>&1; then
@@ -205,7 +208,7 @@ fi
 rm -f "$DAEMON_PID_FILE"
 
 # Start daemon in background
-nohup "$DAEMON_BINARY" >> "$DAEMON_LOG_FILE" 2>&1 &
+nohup "$DAEMON_BINARY" >> "$DAEMON_LOG_FILE" 2>> "$DAEMON_ERROR_LOG_FILE" &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > "$DAEMON_PID_FILE"
 log_info "Daemon PID: $DAEMON_PID"
@@ -391,8 +394,8 @@ log_info "Detecting platform requirements from TaskRun..."
 
 # Parse PLATFORM from TaskRun YAML using yq
 PLATFORM=""
-if command_exists yq; then
-    PLATFORM=$(yq eval '.spec.params[] | select(.name == "PLATFORM") | .value' "$TASKRUN_FILE" 2>/dev/null || true)
+if command -v /usr/bin/yq &>/dev/null; then
+    PLATFORM=$(/usr/bin/yq eval '.spec.params[] | select(.name == "PLATFORM") | .value' "$TASKRUN_FILE" 2>/dev/null || true)
 fi
 
 if [ -z "$PLATFORM" ]; then

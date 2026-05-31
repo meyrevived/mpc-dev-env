@@ -43,6 +43,13 @@ log_error() { echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $*" >&2; }
 # log_warning: Yellow [WARNING] prefix for warning messages (stdout)
 log_warning() { echo -e "${COLOR_YELLOW}[WARNING]${COLOR_RESET} $*"; }
 
+# log_debug: Blue [DEBUG] prefix for debug messages (stdout, only when LOG_LEVEL=debug)
+log_debug() {
+    if [[ "${LOG_LEVEL:-}" == "debug" ]]; then
+        echo -e "${COLOR_BLUE}[DEBUG]${COLOR_RESET} $*"
+    fi
+}
+
 # prompt_user - Prompt user for text input with optional default value
 #
 # Arguments:
@@ -217,7 +224,7 @@ load_config() {
 
     if [ -f "$config_file" ]; then
         log_info "Loading configuration from: $config_file"
-        log_info "[DEBUG] Config file size: $(wc -c < "$config_file") bytes"
+        log_debug "Config file size: $(wc -c < "$config_file") bytes"
         # Source the file but only set variables that aren't already set
         while IFS='=' read -r key value || [ -n "$key" ]; do
             # Skip empty lines and comments
@@ -231,14 +238,14 @@ load_config() {
                 log_info "  Loaded $key from config"
                 # DEBUG: Show loaded AWS profile
                 if [ "$key" = "AWS_PROFILE" ]; then
-                    log_info "  [DEBUG] AWS_PROFILE: $value"
+                    log_debug "AWS_PROFILE: $value"
                 elif [ "$key" = "SSH_KEY_PATH" ]; then
-                    log_info "  [DEBUG] SSH_KEY_PATH file exists: $([ -f "$value" ] && echo "yes" || echo "no")"
+                    log_debug "SSH_KEY_PATH file exists: $([ -f "$value" ] && echo "yes" || echo "no")"
                 fi
             fi
         done < "$config_file"
     else
-        log_info "[DEBUG] Config file does not exist: $config_file"
+        log_debug "Config file does not exist: $config_file"
     fi
 }
 
@@ -284,6 +291,15 @@ EOF
     if [ -n "${SSH_KEY_PATH:-}" ]; then
         cat >> "$config_file" << EOF
 SSH_KEY_PATH="${SSH_KEY_PATH}"
+EOF
+    fi
+
+    # Append LOG_LEVEL if set
+    if [ -n "${LOG_LEVEL:-}" ]; then
+        cat >> "$config_file" << EOF
+
+# Log Level Configuration
+LOG_LEVEL="${LOG_LEVEL}"
 EOF
     fi
 

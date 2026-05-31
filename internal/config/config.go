@@ -27,6 +27,10 @@ type Config struct {
 	// SessionLogDir is the directory for the current session's logs.
 	// Read from SESSION_LOG_DIR env var, falls back to MpcDevEnvPath/logs.
 	SessionLogDir string
+
+	// LogLevel is the logging verbosity level (e.g., "debug", "info", "warn", "error").
+	// Read from LOG_LEVEL env var, defaults to "info".
+	LogLevel string
 }
 
 // LoadConfig reads environment variables and constructs the Config struct.
@@ -76,12 +80,19 @@ func LoadConfig() (*Config, error) {
 		sessionLogDir = filepath.Join(mpcDevEnvPath, "logs")
 	}
 
+	// Log level: from env var or default to "info"
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+
 	// Create the Config struct
 	cfg := &Config{
 		MpcRepoPath:   mpcRepoPath,
 		MpcDevEnvPath: mpcDevEnvPath,
 		TempDir:       tempDir,
 		SessionLogDir: sessionLogDir,
+		LogLevel:      logLevel,
 	}
 
 	// Validate the configuration
